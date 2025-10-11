@@ -4,14 +4,28 @@ type EventListenerOptions = boolean | { capture?: boolean; };
 type AddEventListenerOptions = EventListenerOptions & { once?: boolean, passive?: boolean; };
 type EventListenerOrEventListenerObject = (evt: MessageEvent) => unknown;
 
-interface CloseEvent extends Event {
+export interface MessageEvent<T = any> extends Event {
+    readonly data: T;
+}
+
+type CloseEventInit = EventInit & {
+    code?: number;
+    reason?: string;
+    wasClean?: boolean;
+}
+
+class CloseEvent extends Event {
+
     readonly code: number;
     readonly reason: string;
     readonly wasClean: boolean;
-}
 
-export interface MessageEvent<T = any> extends Event {
-    readonly data: T;
+    constructor(type: string, init: CloseEventInit) {
+        super(type, init);
+        this.code = init.code ?? 1000;
+        this.reason = init.reason ?? '';
+        this.wasClean = init.wasClean ?? true;
+    }
 }
 
 interface WebSocketForceEventMap {
