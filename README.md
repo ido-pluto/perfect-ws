@@ -4,7 +4,7 @@
 <div align="center">
 
 [![Build](https://github.com/ido-pluto/perfect-ws/actions/workflows/build.yml/badge.svg)](https://github.com/ido-pluto/perfect-ws/actions/workflows/build.yml)
-[![Coverage](https://ido-pluto.github.io/perfect-ws/badges.svg)](https://ido-pluto.github.io/perfect-ws/)
+[![Coverage](https://ido-pluto.github.io/perfect-ws/badge.svg)](https://ido-pluto.github.io/perfect-ws/)
 [![License](https://badgen.net/badge/color/MIT/green?label=license)](https://www.npmjs.com/package/perfect-ws)
 [![Types](https://badgen.net/badge/color/TypeScript/blue?label=types)](https://www.npmjs.com/package/perfect-ws)
 [![npm downloads](https://img.shields.io/npm/dt/perfect-ws.svg)](https://www.npmjs.com/package/perfect-ws)

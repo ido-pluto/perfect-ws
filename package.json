@@ -11,7 +11,7 @@
     "build": "tsc --build tsconfig.json",
     "build:local": "tsc --build tsconfig.json --sourceMap",
     "test:coverage": "vitest run --coverage",
-    "generate-coverage-badge": "coverage-badge-creator -s coverage/coverage-summary.json -o coverage/badge.svg",
+    "generate-coverage-badge": "coverage-badges -s coverage/coverage-summary.json -o coverage/badge.svg",
     "test:ui": "vitest --ui"
   },
   "keywords": [
@@ -66,7 +66,7 @@
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^3.2.4",
     "@vitest/ui": "^3.2.4",
-    "coverage-badge-creator": "^1.0.21",
+    "coverage-badges-cli": "^2.2.0",
     "happy-dom": "^19.0.2",
     "semantic-release": "^24.2.9",
     "typescript": "^5.9.3",

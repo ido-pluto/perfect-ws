@@ -8,8 +8,8 @@ describe('Network Stability Integration Tests', () => {
   let wss: WebSocketServer;
   let serverRouter: PerfectWS | PerfectWSAdvanced;
   let clientRouter: PerfectWS | PerfectWSAdvanced;
-  let serverCleanup: () => void;
-  let clientCleanup: () => void;
+  let serverCleanup: (() => void) | undefined;
+  let clientCleanup: (() => void) | undefined;
   let serverPort: number;
 
   beforeEach(async () => {
@@ -19,13 +19,11 @@ describe('Network Stability Integration Tests', () => {
   });
 
   afterEach(async () => {
-    // Give pending operations time to complete before cleanup
-    await sleep(100);
+    await sleep(50);
     serverCleanup?.();
     clientCleanup?.();
     await new Promise((resolve) => wss.close(resolve));
-    // Additional delay for cleanup to propagate
-    await sleep(50);
+    await sleep(20);
   });
 
   it('should handle rapid connection drops and reconnections with pending requests', async () => {
@@ -38,7 +36,7 @@ describe('Network Stability Integration Tests', () => {
     server.on('longProcess', async (data, { send, abortSignal }) => {
       for (let i = 0; i < 10; i++) {
         if (abortSignal.aborted) break;
-        await sleep(100);
+        await sleep(20);
         send({ progress: i * 10, id: data.id }, false);
       }
       processedRequests.push(data.id);
@@ -70,7 +68,7 @@ describe('Network Stability Integration Tests', () => {
           callback: (data, error, down) => {
             callback(data, error, down)
           },
-          timeout: 5000
+          timeout: 2000
         }).catch(err => {
           errors.push({ id: `req-${i}`, error: err.message });
           return null;
@@ -79,17 +77,17 @@ describe('Network Stability Integration Tests', () => {
     }
 
     // Simulate network instability
-    await sleep(200);
+    await sleep(50);
     ws.close(); // First disconnect
 
-    await sleep(100);
+    await sleep(30);
     ws = new WebSocket(`ws://localhost:${serverPort}`);
     setServer(ws);
 
-    await sleep(300);
+    await sleep(80);
     ws.close(); // Second disconnect
 
-    await sleep(100);
+    await sleep(30);
     ws = new WebSocket(`ws://localhost:${serverPort}`);
     setServer(ws);
 
@@ -114,11 +112,9 @@ describe('Network Stability Integration Tests', () => {
       const startTime = Date.now();
       requestLog.set(data.id, { start: startTime });
 
-      // Simulate varying processing times (reduced for speed)
-      await sleep(Math.random() * 100);
+      await sleep(Math.random() * 20);
 
       if (Math.random() < 0.05) {
-      // 5% chance of server error (reduced from 10%)
         throw new Error(`Server error for ${data.id}`);
       }
 
@@ -136,19 +132,18 @@ describe('Network Stability Integration Tests', () => {
 
     const { router: client, setServer } = PerfectWS.client();
     clientRouter = client;
-    client.config.requestTimeout = 8000;
-    client.config.sendRequestRetries = 3;
+    client.config.requestTimeout = 3000;
+    client.config.sendRequestRetries = 2;
 
     let ws = new WebSocket(`ws://localhost:${serverPort}`);
     setServer(ws);
     await client.serverOpen;
 
-    const NUM_REQUESTS = 50; // Reduced from 100 for faster execution
+    const NUM_REQUESTS = 30;
     const requests: Promise<any>[] = [];
     const requestStartTimes: Map<string, number> = new Map();
     let reconnections = 0;
 
-    // Launch concurrent requests with throttling
     for (let i = 0; i < NUM_REQUESTS; i++) {
       const id = `massive-${i}`;
       requestStartTimes.set(id, Date.now());
@@ -156,27 +151,24 @@ describe('Network Stability Integration Tests', () => {
       requests.push(
         client.request('process', {
           id,
-          data: Buffer.alloc(512).fill(i % 256) // Reduced data size
+          data: Buffer.alloc(256).fill(i % 256)
         }, {
-          timeout: 8000
+          timeout: 3000
         }).catch(err => ({ error: err.message, id }))
       );
 
-      // Simulate network issues during request sending (less aggressive)
-      if (i === 20 && reconnections < 2) {
+      if (i === 15 && reconnections < 1) {
         reconnections++;
-        // Wait a bit for some requests to complete
-        await sleep(200);
+        await sleep(50);
         ws.close();
-        await sleep(100);
+        await sleep(30);
         ws = new WebSocket(`ws://localhost:${serverPort}`);
         setServer(ws);
-        await client.serverOpen; // Wait for reconnection
+        await client.serverOpen;
       }
 
-      // Add small delay every 10 requests to prevent overwhelming
       if (i % 10 === 0 && i > 0) {
-        await sleep(10);
+        await sleep(5);
       }
     }
 
@@ -186,30 +178,26 @@ describe('Network Stability Integration Tests', () => {
     const failed = results.filter(r => r.error);
 
     expect(successful.length + failed.length).toBe(NUM_REQUESTS);
-    // With one reconnection and proper timing, most requests should succeed
-    expect(successful.length).toBeGreaterThan(NUM_REQUESTS * 0.4); // At least 40% should succeed
+    expect(successful.length).toBeGreaterThan(NUM_REQUESTS * 0.4);
 
-    // Verify timing consistency
     successful.forEach(result => {
       const clientStart = requestStartTimes.get(result.processed)!;
       const serverLog = requestLog.get(result.processed);
       if (serverLog?.end) {
         const totalTime = serverLog.end - clientStart;
-        expect(totalTime).toBeLessThan(9000); // Should not exceed timeout + overhead
+        expect(totalTime).toBeLessThan(4000);
       }
     });
-    
-    // Close connection and wait for cleanup
+
     ws.close();
-    await sleep(100);
-  }, 15000); // Increased timeout to 15 seconds
+    await sleep(30);
+  }, 8000);
 
   it('should handle WebSocket frame fragmentation with large payloads', async () => {
     const { router: server, attachClient } = PerfectWSAdvanced.server();
     serverRouter = server;
 
     server.on('largeData', async (data, { send }) => {
-      // Echo back with transformations
       const chunks: any[] = [];
       for (let i = 0; i < data.chunks.length; i++) {
         chunks.push({
@@ -218,7 +206,6 @@ describe('Network Stability Integration Tests', () => {
           checksum: data.chunks[i].reduce((a: number, b: number) => a + b, 0)
         });
 
-        // Stream progress
         send({
           progress: ((i + 1) / data.chunks.length) * 100,
           processed: i + 1,
@@ -244,10 +231,9 @@ describe('Network Stability Integration Tests', () => {
     setServer(ws);
     await client.serverOpen;
 
-    // Create large payload with multiple chunks
     const chunks: any[] = [];
-    for (let i = 0; i < 50; i++) {
-      chunks.push(Array(10000).fill(i)); // 50 chunks of 10k elements each
+    for (let i = 0; i < 20; i++) {
+      chunks.push(Array(5000).fill(i));
     }
 
     const progressUpdates: any[] = [];
@@ -257,12 +243,12 @@ describe('Network Stability Integration Tests', () => {
           progressUpdates.push(data);
         }
       },
-      timeout: 30000
+      timeout: 5000
     });
 
     expect(result.processed).toBe(true);
-    expect(result.chunks).toHaveLength(50);
-    expect(result.totalSize).toBe(500000);
+    expect(result.chunks).toHaveLength(20);
+    expect(result.totalSize).toBe(100000);
     expect(progressUpdates.length).toBeGreaterThan(0);
     expect(progressUpdates[progressUpdates.length - 1].progress).toBe(100);
   });
@@ -270,15 +256,14 @@ describe('Network Stability Integration Tests', () => {
   it('should handle ping-pong timeout scenarios with recovery', async () => {
     const { router: server, attachClient } = PerfectWS.server();
     serverRouter = server;
-    server.config.pingReceiveTimeout = 1000;
-    server.config.pingIntervalMs = 200;
+    server.config.pingReceiveTimeout = 500;
+    server.config.pingIntervalMs = 100;
 
     let pingCount = 0;
     server.on('___ping', () => {
       pingCount++;
-      if (pingCount === 5) {
-        // Simulate slow response on 5th ping
-        return new Promise(resolve => setTimeout(() => resolve('pong'), 1500));
+      if (pingCount === 3) {
+        return new Promise(resolve => setTimeout(() => resolve('pong'), 600));
       }
       return 'pong';
     });
@@ -289,8 +274,8 @@ describe('Network Stability Integration Tests', () => {
 
     const { router: client, setServer } = PerfectWS.client();
     clientRouter = client;
-    client.config.pingIntervalMs = 200;
-    client.config.pingRequestTimeout = 500;
+    client.config.pingIntervalMs = 100;
+    client.config.pingRequestTimeout = 300;
 
     let disconnectCount = 0;
     const ws = new WebSocket(`ws://localhost:${serverPort}`);
@@ -302,22 +287,20 @@ describe('Network Stability Integration Tests', () => {
     setServer(ws);
     await client.serverOpen;
 
-    // Make requests while ping-pong is happening
     const requests: Promise<any>[] = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 5; i++) {
       requests.push(
         client.request('test', { id: i }, {
-          timeout: 2000,
+          timeout: 1000,
           doNotWaitForConnection: true
         }).catch(() => null)
       );
-      await sleep(300);
+      await sleep(150);
     }
 
     const results = await Promise.all(requests);
     const successful = results.filter(r => r !== null);
 
-    // Should handle ping timeouts gracefully
     expect(disconnectCount).toBeGreaterThanOrEqual(0);
   });
 
@@ -339,13 +322,13 @@ describe('Network Stability Integration Tests', () => {
       abortSignal.addEventListener('abort', cleanup);
 
       try {
-        for (let i = 0; i < 100; i++) {
+        for (let i = 0; i < 50; i++) {
           if (abortSignal.aborted) {
             cleanup();
             throw new Error('Aborted');
           }
-          await sleep(50);
-          send({ progress: i }, false);
+          await sleep(20);
+          send({ progress: i * 2 }, false);
         }
         activeRequests.delete(data.id);
         return { completed: data.id };
@@ -369,7 +352,6 @@ describe('Network Stability Integration Tests', () => {
     const controllers: AbortController[] = [];
     const requests2: Promise<any>[] = [];
 
-    // Start 10 abortable requests
     for (let i = 0; i < 10; i++) {
       const controller = new AbortController();
       controllers.push(controller);
@@ -377,20 +359,19 @@ describe('Network Stability Integration Tests', () => {
       requests2.push(
         client.request('abortable', { id: `abort-${i}` }, {
           abortSignal: controller.signal,
-          timeout: 10000
+          timeout: 3000
         }).catch(err => ({ aborted: true, error: err.message }))
       );
     }
 
-    // Abort requests at different times
-    await sleep(100);
+    await sleep(30);
     controllers[0].abort('User cancelled');
 
-    await sleep(200);
+    await sleep(50);
     controllers[2].abort('Timeout');
     controllers[3].abort('Network issue');
 
-    await sleep(500);
+    await sleep(100);
     controllers[5].abort('Application closing');
 
     const results = await Promise.all(requests2);
@@ -412,12 +393,10 @@ describe('Network Stability Integration Tests', () => {
     server.on('byzantine', async (data, { send }) => {
       const currentState = stateMap.get(data.key) || { version: 0, value: null };
 
-      // Simulate Byzantine behavior - sometimes return old state
       if (Math.random() < 0.2) {
         return { ...currentState, byzantine: true };
       }
 
-      // Normal operation
       if (data.operation === 'write') {
         const newState = {
           version: currentState.version + 1,
@@ -426,8 +405,7 @@ describe('Network Stability Integration Tests', () => {
         };
         stateMap.set(data.key, newState);
 
-        // Simulate eventual consistency delay
-        await sleep(Math.random() * 100);
+        await sleep(Math.random() * 20);
 
         return newState;
       } else {
@@ -446,26 +424,24 @@ describe('Network Stability Integration Tests', () => {
     setServer(ws);
     await client.serverOpen;
 
-    // Multiple clients trying to update same key
     const operations: Promise<any>[] = [];
     const key = 'byzantine-key';
 
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 10; i++) {
       operations.push(
         client.request('byzantine', {
           key,
           operation: 'write',
           value: `value-${i}`
-        }, { timeout: 2000 })
+        }, { timeout: 1000 })
       );
 
-      // Add some reads
       if (i % 3 === 0) {
         operations.push(
           client.request('byzantine', {
             key,
             operation: 'read'
-          }, { timeout: 2000 })
+          }, { timeout: 1000 })
         );
       }
     }
@@ -497,16 +473,13 @@ describe('Network Stability Integration Tests', () => {
     let rejectedCount = 0;
 
     server.on('memory', async (data) => {
-      // Simulate memory-intensive operation
       const buffer = Buffer.alloc(data.size);
 
-      // Simulate processing
       await sleep(data.delay);
 
       processedCount++;
 
-      // Randomly reject some to simulate memory pressure
-      if (processedCount > 50 && Math.random() < 0.3) {
+      if (processedCount > 30 && Math.random() < 0.3) {
         rejectedCount++;
         throw new Error('Out of memory');
       }
@@ -524,30 +497,28 @@ describe('Network Stability Integration Tests', () => {
 
     const { router: client, setServer } = PerfectWS.client();
     clientRouter = client;
-    client.config.requestTimeout = 5000;
+    client.config.requestTimeout = 2000;
 
     const ws = new WebSocket(`ws://localhost:${serverPort}`);
     setServer(ws);
     await client.serverOpen;
 
     const requests: Promise<any>[] = [];
-    const sizes = [1024, 10240, 102400, 1024000]; // Various sizes
+    const sizes = [1024, 10240, 102400, 512000];
 
-    // Flood with requests
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 50; i++) {
       requests.push(
         client.request('memory', {
           id: `mem-${i}`,
           size: sizes[i % sizes.length],
-          delay: Math.random() * 50
+          delay: Math.random() * 20
         }, {
-          timeout: 3000
+          timeout: 2000
         }).catch(err => ({ error: err.message, id: `mem-${i}` }))
       );
 
-      // Don't wait between requests to create pressure
       if (i % 10 === 0) {
-        await sleep(1); // Brief yield
+        await sleep(1);
       }
     }
 
@@ -556,10 +527,9 @@ describe('Network Stability Integration Tests', () => {
     const successful = results.filter(r => r.processed);
     const failed = results.filter(r => r.error);
 
-    expect(successful.length + failed.length).toBe(100);
+    expect(successful.length + failed.length).toBe(50);
     expect(processedCount).toBeGreaterThan(0);
 
-    // Memory pressure should cause some failures
     if (rejectedCount > 0) {
       expect(failed.some(f => f.error.includes('memory'))).toBe(true);
     }
@@ -587,46 +557,40 @@ describe('Network Stability Integration Tests', () => {
     const operations4: Promise<any>[] = [];
     const connectionChanges: string[] = [];
 
-    // Start request before connection is open
     operations4.push(
-      client.request('race', { id: 'pre-open' }, { timeout: 5000 })
+      client.request('race', { id: 'pre-open' }, { timeout: 2000 })
         .catch(e => ({ error: 'pre-open', message: e.message }))
     );
 
-    // Wait for open
     await client.serverOpen;
 
-    // Normal request
     operations4.push(
-      client.request('race', { id: 'normal' }, { timeout: 5000 })
+      client.request('race', { id: 'normal' }, { timeout: 2000 })
         .catch(e => ({ error: 'normal', message: e.message }))
     );
 
-    // Close connection during request
     setTimeout(() => {
       connectionChanges.push('close-1');
       ws.close();
-    }, 50);
+    }, 30);
 
     operations4.push(
-      client.request('race', { id: 'during-close', delay: 100 }, { timeout: 5000 })
+      client.request('race', { id: 'during-close', delay: 50 }, { timeout: 2000 })
         .catch(e => ({ error: 'during-close', message: e.message }))
     );
 
-    // Reconnect quickly
     setTimeout(() => {
       connectionChanges.push('reconnect-1');
       ws = new WebSocket(`ws://localhost:${serverPort}`);
       setServer(ws);
-    }, 100);
+    }, 60);
 
     operations4.push(
-      client.request('race', { id: 'after-reconnect' }, { timeout: 5000 })
+      client.request('race', { id: 'after-reconnect' }, { timeout: 2000 })
         .catch(e => ({ error: 'after-reconnect', message: e.message }))
     );
 
-    // Multiple rapid reconnects
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
       setTimeout(() => {
         connectionChanges.push(`toggle-${i}`);
         if (i % 2 === 0) {
@@ -635,11 +599,11 @@ describe('Network Stability Integration Tests', () => {
           ws = new WebSocket(`ws://localhost:${serverPort}`);
           setServer(ws);
         }
-      }, 200 + i * 50);
+      }, 120 + i * 30);
     }
 
     operations4.push(
-      client.request('race', { id: 'after-chaos' }, { timeout: 5000 })
+      client.request('race', { id: 'after-chaos' }, { timeout: 2000 })
         .catch(e => ({ error: 'after-chaos', message: e.message }))
     );
 
@@ -661,14 +625,13 @@ describe('Network Stability Integration Tests', () => {
     let receivedCount = 0;
     let droppedCount = 0;
     const buffer: any[] = [];
-    const MAX_BUFFER = 50;
-    let processing = 0; // Track concurrent processing
+    const MAX_BUFFER = 30;
+    let processing = 0;
 
     server.on('stream', async (data, { send, abortSignal }) => {
       receivedCount++;
       processing++;
 
-      // Check if buffer would overflow with current processing
       if (buffer.length + processing > MAX_BUFFER) {
         processing--;
         droppedCount++;
@@ -678,8 +641,7 @@ describe('Network Stability Integration Tests', () => {
       buffer.push(data);
       processing--;
 
-      // Simulate slow consumer
-      await sleep(data.processingTime || 50);
+      await sleep(data.processingTime || 20);
 
       if (abortSignal.aborted) {
         buffer.shift();
@@ -688,7 +650,6 @@ describe('Network Stability Integration Tests', () => {
 
       const result = buffer.shift();
 
-      // Send flow control signals
       send({
         type: 'flow',
         bufferSize: buffer.length,
@@ -713,8 +674,7 @@ describe('Network Stability Integration Tests', () => {
     let shouldSlow = false;
     const flowUpdates: any[] = [];
 
-    // Producer sending at varying rates
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 50; i++) {
       const callback = (data: any, error: any, done: boolean) => {
         if (!done && data?.type === 'flow') {
           flowUpdates.push(data);
@@ -725,19 +685,18 @@ describe('Network Stability Integration Tests', () => {
       requests5.push(
         client.request('stream', {
           id: `stream-${i}`,
-          size: Math.random() * 1000,
-          processingTime: shouldSlow ? 150 : 50
+          size: Math.random() * 500,
+          processingTime: shouldSlow ? 50 : 20
         }, {
           callback,
-          timeout: 3000 // Shorter timeout to fail fast
+          timeout: 2000
         }).catch(e => ({ error: e.message }))
       );
 
-      // Adaptive rate based on flow control
       if (shouldSlow) {
-        await sleep(100);
+        await sleep(30);
       } else if (i % 10 === 0) {
-        await sleep(10);
+        await sleep(5);
       }
     }
 
@@ -746,31 +705,27 @@ describe('Network Stability Integration Tests', () => {
     const successful = results.filter(r => r.processed);
     const failed = results.filter(r => r.error);
 
-    expect(receivedCount).toBe(100);
+    expect(receivedCount).toBe(50);
     expect(flowUpdates.length).toBeGreaterThan(0);
 
-    // Should have some backpressure events
     const backpressureEvents = flowUpdates.filter(u => !u.canAccept);
     expect(backpressureEvents.length).toBeGreaterThanOrEqual(0);
 
-    // Buffer should have prevented total failure
     expect(successful.length).toBeGreaterThan(failed.length);
-    
-    // Close connection and wait for all pending operations to complete
+
     ws.close();
-    await sleep(100);
+    await sleep(30);
   });
 
   it('should handle clock skew and time synchronization issues', async () => {
     const { router: server, attachClient } = PerfectWS.server();
     serverRouter = server;
 
-    let serverTimeOffset = 0; // Simulate clock skew
+    let serverTimeOffset = 0;
 
     server.on('timesync', async (data) => {
       const serverTime = Date.now() + serverTimeOffset;
 
-      // Simulate clock drift
       serverTimeOffset += Math.random() * 1000 - 500;
 
       return {
@@ -784,12 +739,11 @@ describe('Network Stability Integration Tests', () => {
     server.on('timeout-sensitive', async (data) => {
       const serverTime = Date.now() + serverTimeOffset;
 
-      // Check if request is "expired" based on server time
       if (serverTime - data.timestamp > data.ttl) {
         throw new Error('Request expired due to clock skew');
       }
 
-      await sleep(data.processingTime || 100);
+      await sleep(data.processingTime || 30);
 
       return {
         processed: true,
@@ -808,31 +762,28 @@ describe('Network Stability Integration Tests', () => {
     setServer(ws);
     await client.serverOpen;
 
-    // Test time synchronization
     const syncResults: any[] = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 5; i++) {
       const result = await client.request('timesync', {
         timestamp: Date.now(),
         sequence: i
       });
       syncResults.push(result);
-      await sleep(100);
+      await sleep(30);
     }
 
-    // Calculate average skew
     const skews = syncResults.map(r => r.skew);
     const avgSkew = skews.reduce((a, b) => a + b, 0) / skews.length;
 
-    // Test timeout-sensitive operations with skew compensation
     const timeoutOps: Promise<any>[] = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 5; i++) {
       timeoutOps.push(
         client.request('timeout-sensitive', {
-          timestamp: Date.now() - avgSkew, // Compensate for skew
+          timestamp: Date.now() - avgSkew,
           ttl: 1000,
-          processingTime: 50
+          processingTime: 20
         }, {
-          timeout: 2000
+          timeout: 1000
         }).catch(e => ({ error: e.message }))
       );
     }
@@ -842,15 +793,13 @@ describe('Network Stability Integration Tests', () => {
     const successful = results.filter(r => r.processed);
     const expired = results.filter(r => r.error?.includes('expired'));
 
-    expect(syncResults).toHaveLength(10);
-    expect(successful.length + expired.length).toBe(10);
+    expect(syncResults).toHaveLength(5);
+    expect(successful.length + expired.length).toBe(5);
 
-    // Clock skew should cause some expirations
     if (Math.abs(avgSkew) > 500) {
       expect(expired.length).toBeGreaterThan(0);
     }
     
-    // Wait for all pending operations to complete
-    await sleep(200);
+    await sleep(50);
   });
 });

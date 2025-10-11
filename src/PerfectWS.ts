@@ -72,7 +72,7 @@ export type WSClientResult<WSType extends WSLike = WSLike, Router extends Perfec
 
 export type WSServerResult<WSType extends WSLike = WSLike, Router extends PerfectWS<WSType> = PerfectWS<WSType>> = {
     router: Router;
-    attachClient: (socket: WSType | WSLike) => void;
+    attachClient: (socket: WSType | WSLike) => () => void;
     autoReconnect: (url: string, webSocketConstructor?: typeof WebSocket) => () => void;
     unregister: () => void;
 };
