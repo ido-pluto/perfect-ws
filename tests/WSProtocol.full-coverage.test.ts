@@ -449,6 +449,7 @@ describe('PerfectWS Full Coverage', () => {
       });
 
       // Trigger clear old requests
+      router['_clearOldRequestActive'] = false;
       router['_clearOldRequests']();
 
       // Wait for ___hasRequest to be sent
@@ -506,6 +507,7 @@ describe('PerfectWS Full Coverage', () => {
       });
 
       // Trigger clear old requests
+      router['_clearOldRequestActive'] = false;
       router['_clearOldRequests']();
 
       await sleep(100);
