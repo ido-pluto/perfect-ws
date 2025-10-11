@@ -78,6 +78,7 @@ export type WSServerResult<WSType extends WSLike = WSLike, Router extends Perfec
 };
 
 export type PerfectWSConfig = {
+    connectionTimeout: number;
     clearOldRequestsDelay: number;
     requestTimeout: number;
     syncRequestsTimeout: number;
@@ -95,6 +96,7 @@ export type PerfectWSConfig = {
 
 export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: string]: any; }> {
     public config = {
+        connectionTimeout: 1000 * 3,
         clearOldRequestsDelay: 1000 * 10,
         requestTimeout: 1000 * 60 * 15,
         syncRequestsTimeout: 1000 * 5,
@@ -849,10 +851,15 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
         const checkPingInterval = async (socket: WebSocketForce) => {
             if (socket.readyState != WebSocketForce.OPEN) {
-                socket.addEventListener('open', () => {
-                    checkPingInterval(socket);
-                });
-                return;
+                const result = await Promise.race([
+                    socket.once('open').then(x => 'open'),
+                    sleep(router.config.connectionTimeout).then(x => 'timeout')
+                ]);
+
+                if (result === 'timeout') {
+                    socket.forceClose(1000, 'Connection timeout');
+                    return;
+                }
             }
 
             router._lastPingTime = Date.now();
@@ -878,6 +885,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 router._onRequest(parsedData, socketAsWSForce);
             };
 
+            checkPingInterval(socketAsWSForce);
+
             socketAsWSForce.addEventListener('message', onMessage);
             const cleanup = () => socketAsWSForce.removeEventListener('message', onMessage);
             unregisterFunctions.push(cleanup);
@@ -898,9 +907,6 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                     socketAsWSForce = socket instanceof WebSocketForce ? socket : new WebSocketForce(socket);
                     socketAsWSForce.binaryType = 'arraybuffer';
                     const cleanup = attachClient(socketAsWSForce);
-
-                    checkPingInterval(socketAsWSForce);
-
                     await socketAsWSForce.once('close');
                     cleanup();
 

@@ -562,6 +562,11 @@ Configure behavior via the `router.config` object.
 
 ##### Connection Management
 
+**`connectionTimeout`** (default: 3000ms)
+- Maximum time to wait for a connection to be established
+- If exceeded, the connection is considered unhealthy and may be closed
+- Helps detect network issues or unresponsive peers quickly
+
 **`pingRequestTimeout`** (default: 5000ms)
 - Maximum time to wait for a ping response
 - If exceeded, the connection is considered unhealthy and may be closed
