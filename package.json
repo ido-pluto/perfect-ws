@@ -8,7 +8,7 @@
     "build": "tsc --build tsconfig.json",
     "build:local": "tsc --build tsconfig.json --sourceMap",
     "test:coverage": "vitest run --coverage",
-    "generate-coverage-badge": "coverage-badge-creator",
+    "generate-coverage-badge": "coverage-badge-creator -s coverage/coverage-summary.json -o coverage/badge.svg",
     "test:ui": "vitest --ui"
   },
   "keywords": [
