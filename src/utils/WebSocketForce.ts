@@ -35,6 +35,7 @@ interface WebSocketForceEventMap {
     open: Event;
 }
 
+
 export interface WSLike {
     url: string;
     protocol: string;
@@ -45,7 +46,7 @@ export interface WSLike {
     dispatchEvent?(event: Event): boolean;
     emit?(event: string, ...args: any[]): boolean;
     close(code?: number, reason?: string): void;
-    send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+    send(data: string | ArrayBufferLike): void;
     addEventListener(type: string, listener: any, options?: any): void;
     removeEventListener(type: string, listener: any, options?: any): void;
     onopen?: ((ev: any) => any) | null;
@@ -146,7 +147,7 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
         this._ws.close(code, reason);
     }
 
-    send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+    send(data: string | ArrayBufferLike): void {
         this._ws.send(data);
     }
 

@@ -169,8 +169,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         return await this.request("___hasRequest", { requestId }, { doNotWaitForConnection: true, timeout: this.config.syncRequestsTimeout });
     }
 
-    private async _ping() {
-        return await this.request("___ping", null, { doNotWaitForConnection: true, timeout: this.config.pingRequestTimeout });
+    private async _ping(useServer?: WebSocketForce<WSType>) {
+        return await this.request("___ping", null, { doNotWaitForConnection: true, timeout: this.config.pingRequestTimeout, useServer });
     }
 
     private __initPrivateMethods() {
@@ -228,11 +228,14 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
             this._resolveWaitForServer();
 
-            while (this.isServerConnected) {
+            while (server.readyState == WebSocketForce.OPEN) {
                 try {
-                    await this._ping();
+                    if(this.config.verbose) console.log('[PerfectWS] Sending ping');
+                    await this._ping(server);
+                    if(this.config.verbose) console.log('[PerfectWS] Ping received');
                     await sleep(this.config.pingIntervalMs);
                 } catch {
+                    if(this.config.verbose) console.log('[PerfectWS] Ping failed, force closing socket');
                     server.forceClose();
                     break;
                 }
@@ -257,6 +260,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     }
 
     async request<Response = any>(method: string, data?: any, options: WSRequestOptions<Response, WSType> = {}): Promise<Response> {
+        if(this.config.verbose) console.log('[PerfectWS] Request: method=', method, 'data=', data);
+        
         if (!this._isClient) {
             throw new PerfectWSError('This is a server instance, you can only use "request" method on client instance', 'invalidInstance');
         }
@@ -520,11 +525,14 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         const request = this._activeRequests.get(requestId);
 
         if (!request) {
+            if(this.config.verbose) console.log('[PerfectWS] _onServerResponse: request not found, requestId=', requestId);
             if (this.config.abortUnknownResponses && !down) {
                 this._sendJSON({ requestId, event: { eventName: '___abort', args: ["Unknown request"] } }, socket);
             }
             return;
         }
+
+        if(this.config.verbose) console.log('[PerfectWS] _onServerResponse: request found, requestId=', requestId);
 
         if (event) {
             event.args = this.deserializeRequestData(event.args, request.events);
@@ -537,6 +545,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
     private async _onRequest(clientData: any, client: WebSocketForce<WSType>): Promise<void> {
         const { method, requestId, data, event } = clientData;
+
+        if(this.config.verbose) console.log(`[PerfectWS] _onRequest: requestId=${requestId} method=${method} hasRequest=${this._activeResponses.has(requestId)}`);
 
         if (this._activeResponses.has(requestId)) {
             const { events, clients } = this._activeResponses.get(requestId)!;
