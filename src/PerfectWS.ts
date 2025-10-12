@@ -289,6 +289,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
         const events = options.events ?? new NetworkEventListener();
 
+        let hasSetRequest = false;
         const thisStackTrace = new Error().stack;
         const activeRequest: ActiveRequest<WSType> = {
             requestId,
@@ -305,7 +306,9 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 if (down) {
                     activeRequest.finished = true;
                     events.emit('request.finished', { data, error, requestId });
-                    this._activeRequests.delete(requestId);
+                    if(hasSetRequest){
+                        this._activeRequests.delete(requestId);
+                    }
                     if (error != null) {
                         const errorInfo = new PerfectWSError(error.message, error.code, requestId);
                         errorInfo.stack = thisStackTrace;
@@ -350,6 +353,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         }
 
         this._activeRequests.set(requestId, activeRequest);
+        hasSetRequest = true;
         this._clearOldRequests();
 
         if (options.timeout) {
@@ -424,7 +428,6 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             await waitForServer();
             activeRequest.server = this._server!;
         }
-
 
         const sendRequestRetry = async (content: any, retryLefts = this.config.sendRequestRetries) => {
             const serializeData = this.serializeRequestData(content, events);

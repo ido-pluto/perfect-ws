@@ -438,7 +438,8 @@ describe('Chaos Engineering - Non-Standard Scenarios', () => {
     });
 
     it('should handle request ID collision attacks', async () => {
-      const { router, setServer } = PerfectWS.client();
+      const { router, setServer } = PerfectWS.client({temp: true});
+      router.config.runPingLoop = false;
 
       const mockWs = {
         readyState: 1,
