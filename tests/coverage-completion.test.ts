@@ -50,7 +50,8 @@ describe('Coverage Completion Tests', () => {
     });
 
     it('should handle _syncRequests with active requests', async () => {
-      const { router, setServer } = PerfectWS.client();
+      const { router, setServer } = PerfectWS.client({ temp: true });
+      router.config.runPingLoop = false;
 
       const mockWs = {
         readyState: 1,

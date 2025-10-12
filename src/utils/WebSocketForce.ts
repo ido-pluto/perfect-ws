@@ -59,6 +59,8 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
     private _ws: WSType;
     private _closeListeners: Set<Function> = new Set();
     private _forceClosed: boolean = false;
+    private _virtualCloseListeners: Array<{ listener: Function; once?: boolean; }> = [];
+    private _nativeCloseHandler: ((event: any) => void) | null = null;
 
     readonly CONNECTING = 0;
     readonly OPEN = 1;
@@ -72,6 +74,54 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
 
     constructor(ws: WSType) {
         this._ws = ws;
+    }
+
+    private _registerNativeCloseHandler(): void {
+        if (this._nativeCloseHandler !== null) {
+            return;
+        }
+
+        this._nativeCloseHandler = (event: any) => {
+            this._triggerVirtualCloseListeners(event);
+        };
+
+        this._ws.addEventListener('close', this._nativeCloseHandler as any);
+    }
+
+    private _unregisterNativeCloseHandler(): void {
+        if (this._nativeCloseHandler !== null) {
+            this._ws.removeEventListener('close', this._nativeCloseHandler as any);
+            this._nativeCloseHandler = null;
+        }
+    }
+
+    private _triggerVirtualCloseListeners(event?: any): void {
+        const closeEvent = event || new CloseEvent('close', {
+            code: 1000,
+            reason: '',
+            wasClean: !this._forceClosed
+        });
+
+        const listenersToRemove: Function[] = [];
+
+        for (const entry of this._virtualCloseListeners) {
+            try {
+                entry.listener.call(this._ws, closeEvent);
+                if (entry.once) {
+                    listenersToRemove.push(entry.listener);
+                }
+            } catch (error) {
+                console.error('Error in virtual close listener:', error);
+            }
+        }
+
+        for (const listener of listenersToRemove) {
+            this._closeListeners.delete(listener);
+            const index = this._virtualCloseListeners.findIndex(e => e.listener === listener);
+            if (index > -1) {
+                this._virtualCloseListeners.splice(index, 1);
+            }
+        }
     }
 
     get url(): string {
@@ -164,6 +214,13 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
     addEventListener(type: string, listener: unknown, options?: unknown): void {
         if (type === 'close' && typeof listener === 'function') {
             this._closeListeners.add(listener);
+            const once = typeof options === 'object' && options !== null && 'once' in options ? !!(options as any).once : false;
+            this._virtualCloseListeners.push({ listener, once });
+
+            if (this._virtualCloseListeners.length === 1) {
+                this._registerNativeCloseHandler();
+            }
+            return;
         }
         this._ws.addEventListener(type as never, listener as never, options as never);
     }
@@ -181,6 +238,15 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
     removeEventListener(type: string, listener: unknown, options?: unknown): void {
         if (type === 'close' && typeof listener === 'function') {
             this._closeListeners.delete(listener);
+            const index = this._virtualCloseListeners.findIndex(e => e.listener === listener);
+            if (index > -1) {
+                this._virtualCloseListeners.splice(index, 1);
+            }
+
+            if (this._virtualCloseListeners.length === 0) {
+                this._unregisterNativeCloseHandler();
+            }
+            return;
         }
         this._ws.removeEventListener(type as never, listener as never, options as never);
     }
@@ -236,6 +302,7 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
 
         return new Promise((resolve) => {
             const handler = (ev: Event) => {
+                this.removeEventListener(type, handler);
                 resolve(ev);
             };
             this.addEventListener(type, handler, { once: true });
@@ -250,7 +317,6 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
         this._forceClosed = true;
 
         try {
-            // Prefer underlying forceClose when available to satisfy tests spying on it
             const anyWs = this._ws as any;
             if (typeof anyWs.forceClose === 'function') {
                 try { anyWs.forceClose(code, reason); } catch { }
@@ -259,15 +325,7 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
         } catch { }
 
         const closeEvent: CloseEvent = new CloseEvent('close', { code, reason, wasClean: false });
-
-        for (const listener of Array.from(this._closeListeners)) {
-            try {
-                listener.call(this._ws, closeEvent);
-                this.off('close', listener as any);
-            } catch (error) {
-                console.error('Error in close listener:', error);
-            }
-        }
+        this._triggerVirtualCloseListeners(closeEvent);
     }
 
     setMaxListeners(n: number): void {

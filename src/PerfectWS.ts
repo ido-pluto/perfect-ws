@@ -52,6 +52,7 @@ type ActiveRequest<WSType extends WSLike> = {
     callback: WSRequestOptionsCallback;
     doNotWaitForConnection?: boolean;
     abortController: AbortController;
+    hasSent?: boolean;
 };
 
 type ListenForRequest = {
@@ -73,7 +74,7 @@ export type WSClientResult<WSType extends WSLike = WSLike, Router extends Perfec
 export type WSServerResult<WSType extends WSLike = WSLike, Router extends PerfectWS<WSType> = PerfectWS<WSType>> = {
     router: Router;
     attachClient: (socket: WSType | WSLike) => () => void;
-    autoReconnect: (url: string, webSocketConstructor?: typeof WebSocket) => () => void;
+    autoReconnect: (url: string, webSocketConstructor?: new (url: string) => WSType) => () => void;
     unregister: () => void;
 };
 
@@ -92,6 +93,7 @@ export type PerfectWSConfig = {
     maxTransformDepth: number;
     syncRequestsWhenServerOpen: boolean;
     abortUnknownResponses: boolean;
+    runPingLoop: boolean;
 };
 
 export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: string]: any; }> {
@@ -109,7 +111,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         verbose: false,
         maxTransformDepth: 100,
         syncRequestsWhenServerOpen: true,
-        abortUnknownResponses: true
+        abortUnknownResponses: true,
+        runPingLoop: true
     } as PerfectWSConfig & ExtraConfig;
 
     private _server?: WebSocketForce<WSType>;
@@ -123,6 +126,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     private _lastPingTime = 0;
     private _pendingAborts = new Set<string>();
     private _addMiddlewareForNewRequests: WSListenCallback[] = [];
+    private _pingLoopAbortController?: AbortController;
 
     get isServerConnected() {
         return this._server?.readyState == WebSocketForce.OPEN;
@@ -148,7 +152,9 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             throw new PerfectWSError('This is a server instance, you can only use "syncRequests" method on client instance', 'invalidInstance');
         }
 
-        const activeRequestsIds = Array.from(this._activeRequests.keys());
+        const activeRequestsIds = Array.from(this._activeRequests.entries())
+            .filter(([_, request]) => request.hasSent)
+            .map(([id]) => id);
         const unknownActiveRequestsIds = await this.request("___syncRequests", { activeRequestsIds }, { doNotWaitForConnection: true, timeout: this.config.syncRequestsTimeout, useServer });
         for (const requestId of unknownActiveRequestsIds) {
             const request = this._activeRequests.get(requestId);
@@ -203,6 +209,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     private _setServer(originalServer: WebSocketForce<WSType> | WSType) {
         this._unregisterServer?.();
 
+        this._pingLoopAbortController?.abort('New server set');
+
         const server = originalServer instanceof WebSocketForce ? originalServer : new WebSocketForce(originalServer);
 
         try {
@@ -210,6 +218,9 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         } catch { }
 
         server.setMaxListeners(this.config.maxListeners);
+
+        const pingLoopAbortController = new AbortController();
+        this._pingLoopAbortController = pingLoopAbortController;
 
         const onMessage = ({ data }: MessageEvent) => {
             const parsedData = this.deserialize(data);
@@ -228,14 +239,17 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
             this._resolveWaitForServer();
 
-            while (server.readyState == WebSocketForce.OPEN) {
+            if (!this.config.runPingLoop) return;
+
+            while (server.readyState == WebSocketForce.OPEN && !pingLoopAbortController.signal.aborted) {
                 try {
-                    if(this.config.verbose) console.log('[PerfectWS] Sending ping');
+                    if (this.config.verbose) console.log('[PerfectWS] Sending ping');
                     await this._ping(server);
-                    if(this.config.verbose) console.log('[PerfectWS] Ping received');
+                    if (this.config.verbose) console.log('[PerfectWS] Ping received');
                     await sleep(this.config.pingIntervalMs);
                 } catch {
-                    if(this.config.verbose) console.log('[PerfectWS] Ping failed, force closing socket');
+                    if (pingLoopAbortController.signal.aborted) break;
+                    if (this.config.verbose) console.log('[PerfectWS] Ping failed, force closing socket');
                     server.forceClose();
                     break;
                 }
@@ -254,42 +268,100 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         this._server = server;
 
         this._unregisterServer = () => {
+            pingLoopAbortController.abort('Server unregistered');
             server.removeEventListener('message', onMessage);
             server.removeEventListener('open', onOpen);
         };
     }
 
     async request<Response = any>(method: string, data?: any, options: WSRequestOptions<Response, WSType> = {}): Promise<Response> {
-        if(this.config.verbose) console.log('[PerfectWS] Request: method=', method, 'data=', data);
-        
+        if (this.config.verbose) console.log('[PerfectWS] Request: method=', method, 'data=', data);
+
+        const requestId = options.requestId || (method + uuid());
+
+        const { promise, resolve, reject } = Promise.withResolvers<Response>();
+
+        const abortController = new AbortController();
+        options.abortSignal?.addEventListener('abort', (event) => {
+            abortController.abort(options.abortSignal?.reason || 'Request aborted by user');
+            event.preventDefault();
+        });
+
+        const events = options.events ?? new NetworkEventListener();
+
+        const thisStackTrace = new Error().stack;
+        const activeRequest: ActiveRequest<WSType> = {
+            requestId,
+            events,
+            updateTime: Date.now(),
+            server: options.useServer ?? this._server!,
+            doNotWaitForConnection: options.doNotWaitForConnection,
+            abortController,
+            callback: (data, error, down) => {
+                if (activeRequest.finished) return;
+
+                activeRequest.updateTime = Date.now();
+                options?.callback?.(data, error, down);
+                if (down) {
+                    activeRequest.finished = true;
+                    events.emit('request.finished', { data, error, requestId });
+                    this._activeRequests.delete(requestId);
+                    if (error != null) {
+                        const errorInfo = new PerfectWSError(error.message, error.code, requestId);
+                        errorInfo.stack = thisStackTrace;
+                        reject(errorInfo);
+                    } else {
+                        resolve(data);
+                    }
+                }
+            }
+        };
+
+        abortController.signal.addEventListener('abort', (event) => {
+            const hasRequest = this._activeRequests.has(requestId);
+            if (this.config.verbose) {
+                console.warn(`[PerfectWS] Request aborted: method=${method} requestId=${requestId} hasRequest=${hasRequest} reason=${abortController.signal.reason}`);
+            }
+
+            if (hasRequest) {
+                const reason = abortController.signal.reason;
+                activeRequest.callback(null, { message: reason, code: 'abort' }, true);
+                if (activeRequest.hasSent) {
+                    this._sendJSON({ requestId, event: { eventName: '___abort', args: [abortController.signal.reason || "Client aborted"] } }, activeRequest.server);
+                }
+            }
+            event.preventDefault();
+        });
+
         if (!this._isClient) {
-            throw new PerfectWSError('This is a server instance, you can only use "request" method on client instance', 'invalidInstance');
+            activeRequest.callback(null!, { message: 'This is a server instance, you can only use "request" method on client instance', code: 'invalidInstance' }, true);
+            return await promise;
         }
 
         if (options.abortSignal?.aborted) {
-            throw new PerfectWSError('Request aborted by user', 'abort');
+            activeRequest.callback(null!, { message: 'Request aborted by user', code: 'abort' }, true);
+            return await promise;
         }
 
-        const requestId = options.requestId || (method + uuid());
         if (this._activeRequests.has(requestId)) {
-            throw new PerfectWSError('Request already exists', 'requestAlreadyExists');
+            activeRequest.callback(null!, { message: 'Request already exists', code: 'requestAlreadyExists' }, true);
+            return await promise;
         }
 
-        const { promise, resolve, reject } = Promise.withResolvers<Response>();
-        const abortController = new AbortController();
-        options.abortSignal?.addEventListener('abort', () => {
-            abortController.abort(options.abortSignal?.reason || 'Request aborted by user');
-        });
+        this._activeRequests.set(requestId, activeRequest);
+        this._clearOldRequests();
 
-        let requestSent = false;
         if (options.timeout) {
             const timeoutIndex = setTimeout(() => {
-                if (requestSent) {
+                if (activeRequest.finished || abortController.signal.aborted) return;
+
+                if (activeRequest.hasSent) {
                     if (this._activeRequests.has(requestId)) {
-                        abortController.abort(`Request timeout: ${options.timeout}ms`);
+                        activeRequest.callback(null, { message: 'Request timeout', code: 'timeout' }, true);
+                        this._sendJSON({ requestId, event: { eventName: '___abort', args: ["Request timeout"] } }, activeRequest.server);
                     }
                 } else {
-                    abortController.abort(`Request connecting timeout: ${options.timeout}ms`);
+                    activeRequest.callback(null, { message: 'Request connecting timeout', code: 'timeout' }, true);
                 }
             }, options.timeout);
 
@@ -298,8 +370,12 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             });
         }
 
-        const events = options.events ?? new NetworkEventListener();
         const waitForServer = () => new Promise<void>((resolve, reject) => {
+            if (activeRequest.server != this._server || activeRequest.finished || abortController.signal.aborted) {
+                resolve();
+                return;
+            }
+
             let settled = false;
             let cleanup: () => void;
 
@@ -332,70 +408,22 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             events.on('request.finished', onFinished);
         });
 
-        let useServer = options.useServer ?? this._server;
-        if (useServer?.readyState !== WebSocketForce.OPEN) {
+
+        if (activeRequest.server?.readyState !== WebSocketForce.OPEN) {
             if (this.config.verbose) {
                 console.log(`[PerfectWS] Server not connected, waiting for connection, method=${method} requestId=${requestId}`);
             }
 
             if (options.doNotWaitForConnection) {
                 const error = { message: 'Server not connected', code: 'serverClosed' };
-                options?.callback?.(null!, error, true);
-                reject(new PerfectWSError(error.message, error.code, requestId));
+                activeRequest.callback(null, error, true);
                 return promise;
             }
-            await waitForServer();
-            useServer = this._server;
 
-            if (options.abortSignal?.aborted) {
-                throw new PerfectWSError('Request aborted by user', 'abort');
-            }
+            await waitForServer();
+            activeRequest.server = this._server!;
         }
 
-        const thisStackTrace = new Error().stack;
-        const activeRequest: ActiveRequest<WSType> = {
-            requestId,
-            events,
-            updateTime: Date.now(),
-            server: useServer!,
-            doNotWaitForConnection: options.doNotWaitForConnection,
-            abortController,
-            callback: (data, error, down) => {
-                if (activeRequest.finished) return;
-
-                activeRequest.updateTime = Date.now();
-                options?.callback?.(data, error, down);
-                if (down) {
-                    activeRequest.finished = true;
-                    events.emit('request.finished', { data, error, requestId });
-                    this._activeRequests.delete(requestId);
-                    if (error != null) {
-                        const errorInfo = new PerfectWSError(error.message, error.code, requestId);
-                        errorInfo.stack = thisStackTrace;
-                        reject(errorInfo);
-                    } else {
-                        resolve(data);
-                    }
-                }
-            }
-        };
-        this._activeRequests.set(requestId, activeRequest);
-
-        this._clearOldRequests();
-
-        abortController.signal.addEventListener('abort', (event) => {
-            const hasRequest = this._activeRequests.has(requestId);
-            if (this.config.verbose) {
-                console.warn(`[PerfectWS] Request aborted: method=${method} requestId=${requestId} hasRequest=${hasRequest} reason=${abortController.signal.reason}`);
-            }
-
-            if (hasRequest) {
-                const reason = abortController.signal.reason;
-                activeRequest.callback(null, { message: reason, code: 'abort' }, true);
-                this._sendJSON({ requestId, event: { eventName: '___abort', args: [abortController.signal.reason || "Client aborted"] } }, activeRequest.server);
-            }
-            event.preventDefault();
-        });
 
         const sendRequestRetry = async (content: any, retryLefts = this.config.sendRequestRetries) => {
             const serializeData = this.serializeRequestData(content, events);
@@ -413,7 +441,6 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                     events.emit('request.connected', { ws: activeRequest.server });
                     continue;
                 }
-
 
                 activeRequest.callback(null, { message: 'Failed to send request', code: 'sendFailed' }, true);
             }
@@ -459,10 +486,9 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             }
         };
 
-
         try {
             await sendRequestRetry({ method, requestId, data });
-            requestSent = true;
+            activeRequest.hasSent = true;
 
             activeRequest.server.addEventListener('close', retryOnClose);
             return await promise;
@@ -525,14 +551,14 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         const request = this._activeRequests.get(requestId);
 
         if (!request) {
-            if(this.config.verbose) console.log('[PerfectWS] _onServerResponse: request not found, requestId=', requestId);
+            if (this.config.verbose) console.log('[PerfectWS] _onServerResponse: request not found, requestId=', requestId);
             if (this.config.abortUnknownResponses && !down) {
                 this._sendJSON({ requestId, event: { eventName: '___abort', args: ["Unknown request"] } }, socket);
             }
             return;
         }
 
-        if(this.config.verbose) console.log('[PerfectWS] _onServerResponse: request found, requestId=', requestId);
+        if (this.config.verbose) console.log('[PerfectWS] _onServerResponse: request found, requestId=', requestId);
 
         if (event) {
             event.args = this.deserializeRequestData(event.args, request.events);
@@ -546,7 +572,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     private async _onRequest(clientData: any, client: WebSocketForce<WSType>): Promise<void> {
         const { method, requestId, data, event } = clientData;
 
-        if(this.config.verbose) console.log(`[PerfectWS] _onRequest: requestId=${requestId} method=${method} hasRequest=${this._activeResponses.has(requestId)}`);
+        if (this.config.verbose) console.log(`[PerfectWS] _onRequest: requestId=${requestId} method=${method} hasRequest=${this._activeResponses.has(requestId)}`);
 
         if (this._activeResponses.has(requestId)) {
             const { events, clients } = this._activeResponses.get(requestId)!;
@@ -558,10 +584,20 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
             events.emit('request.connected', { ws: client });
             clients.add(client);
-            client.addEventListener('close', () => {
+
+            const closeListener = () => {
                 clients.delete(client);
                 events.emit('request.disconnected', { ws: client });
-            });
+                client.removeEventListener('close', closeListener);
+                events.off('request.finished', requestFinished);
+            };
+
+            const requestFinished = () => {
+                client.removeEventListener('close', closeListener);
+            }
+
+            client.addEventListener('close', closeListener);
+            events.once('request.finished', requestFinished);
             return;
         }
 
@@ -674,9 +710,18 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             sendJSON({ event: { eventName, args }, requestId });
         });
 
-        client.addEventListener('close', () => {
+        const closeListener = () => {
             clientListen.delete(client);
-        });
+            events.off('request.finished', requestFinished);
+        };
+
+        const requestFinished = () => {
+            client.removeEventListener('close', closeListener);
+        };
+
+        client.addEventListener('close', closeListener);
+        events.once('request.finished', requestFinished);
+
 
         this._activeResponses.set(requestId, {
             events,
@@ -874,7 +919,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
             router._lastPingTime = Date.now();
 
-            while (socket.readyState == WebSocketForce.OPEN) {
+            while (socket.readyState == WebSocketForce.OPEN && router.config.runPingLoop) {
                 if (Date.now() - router._lastPingTime > router.config.pingReceiveTimeout) {
                     socket.forceClose(1000, 'Ping timeout');
                     break;
@@ -895,7 +940,10 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 router._onRequest(parsedData, socketAsWSForce);
             };
 
-            checkPingInterval(socketAsWSForce);
+            if (router.config.runPingLoop) {
+                checkPingInterval(socketAsWSForce);
+            }
+
 
             socketAsWSForce.addEventListener('message', onMessage);
             const cleanup = () => socketAsWSForce.removeEventListener('message', onMessage);
@@ -907,7 +955,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             };
         };
 
-        const autoReconnect = (url: string, webSocketConstructor = WebSocket) => {
+        const autoReconnect = (url: string, webSocketConstructor: new (url: string) => WSLike | WSType = WebSocket) => {
             let stopReconnecting = false;
             let socketAsWSForce: WebSocketForce;
 
@@ -916,8 +964,9 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                     const socket = new webSocketConstructor(url);
                     socketAsWSForce = socket instanceof WebSocketForce ? socket : new WebSocketForce(socket);
                     socketAsWSForce.binaryType = 'arraybuffer';
+
                     const cleanup = attachClient(socketAsWSForce);
-                    await socketAsWSForce.once('close');
+                    await Promise.race([socketAsWSForce.once('error'), socketAsWSForce.once('close')]);
                     cleanup();
 
                     if (router.config.delayBeforeReconnect) {

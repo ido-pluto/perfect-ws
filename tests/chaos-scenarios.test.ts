@@ -80,7 +80,8 @@ describe('Chaos Engineering - Non-Standard Scenarios', () => {
     });
 
     it('should handle zombie socket that appears open but is dead', async () => {
-      const { router, setServer } = PerfectWS.client();
+      const { router, setServer } = PerfectWS.client({temp: true});
+      router.config.runPingLoop = false;
 
       const mockWs = {
         readyState: 1, // Claims to be open

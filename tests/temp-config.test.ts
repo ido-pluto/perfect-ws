@@ -301,6 +301,7 @@ describe('Temp Config Tests', () => {
         });
 
         const ws = new WebSocket(`ws://localhost:${PORT}`);
+        await new Promise((resolve) => ws.once('open', resolve));
         const { router, unregister } = PerfectWS.client(ws);
 
         expect(router.config.syncRequestsWhenServerOpen).toBe(true);
@@ -347,6 +348,7 @@ describe('Temp Config Tests', () => {
         expect(permanentResult).toEqual({ data: 'very secret', token: 'abc123' });
 
         permanentClient.unregister();
+        validationWs.close();
     });
 
     describe('Complex Connection Flow: Disconnect -> Temp Validate -> Reconnect Main', () => {
