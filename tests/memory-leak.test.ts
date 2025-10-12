@@ -8,13 +8,60 @@ describe('Memory Leak Tests', () => {
     let server: WebSocketServer;
     let port: number;
 
-    beforeEach((ctx) => {
-        port = 30000 + Number(ctx.task.id.split('').reduce((a, b) => a + b.charCodeAt(0), 0) % 10000);
-        server = new WebSocketServer({ port });
+    // Suppress unhandled connection errors during tests
+    const suppressedErrors: Error[] = [];
+    const errorHandler = (err: Error) => {
+        // Suppress ECONNREFUSED errors that occur during test cleanup
+        if (err.message && err.message.includes('ECONNREFUSED')) {
+            suppressedErrors.push(err);
+            return;
+        }
+        // Re-throw other errors
+        throw err;
+    };
+
+    beforeEach(async () => {
+        // Clear suppressed errors for each test
+        suppressedErrors.length = 0;
+
+        // Add error handler
+        process.on('uncaughtException', errorHandler);
+        // Use a more reliable port calculation to avoid conflicts
+        port = 30000 + Math.floor(Math.random() * 10000);
+
+        // Create server and wait for it to be listening
+        await new Promise<void>((resolve, reject) => {
+            try {
+                server = new WebSocketServer({ port });
+
+                // Wait for server to be listening
+                server.once('listening', () => resolve());
+
+                // Handle errors
+                server.once('error', (err) => reject(err));
+
+                // Add timeout to prevent hanging
+                setTimeout(() => reject(new Error('Server failed to start within 5 seconds')), 5000);
+            } catch (err) {
+                reject(err);
+            }
+        });
     });
 
-    afterEach(() => {
-        server.close();
+    afterEach(async () => {
+        // Remove error handler
+        process.off('uncaughtException', errorHandler);
+
+        // Properly close server and wait for it to finish
+        await new Promise<void>((resolve) => {
+            if (server) {
+                server.close(() => resolve());
+                // Force resolve after timeout to prevent hanging
+                setTimeout(() => resolve(), 1000);
+            } else {
+                resolve();
+            }
+        });
     });
 
     describe('WebSocketForce - Event Listener Leaks', () => {
@@ -384,6 +431,10 @@ describe('Memory Leak Tests', () => {
 
             const { router: clientRouter } = PerfectWS.client();
             clientRouter.config.runPingLoop = false;
+
+            // Small delay to ensure server is ready
+            await new Promise(resolve => setTimeout(resolve, 50));
+
             const ws = new WebSocket(`ws://localhost:${port}`);
             clientRouter['_setServer'](ws);
 

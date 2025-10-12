@@ -698,18 +698,18 @@ describe('PerfectWS Full Coverage', () => {
       router.config.pingReceiveTimeout = 100;
 
       const WebSocketMock = vi.fn();
-      let closeHandler: any;
+      let closeHandlers: any[] = [];
       const mockInstance = {
         readyState: 1,
         addEventListener: vi.fn((event, handler) => {
-          if (event === 'close') closeHandler = handler;
+          if (event === 'close') closeHandlers.push(handler);
         }),
         removeEventListener: vi.fn(),
         send: vi.fn(),
         close: vi.fn(),
         forceClose: vi.fn(),
         on: vi.fn((event, handler) => {
-          if (event === 'close') closeHandler = handler;
+          if (event === 'close') closeHandlers.push(handler);
         })
       };
 
@@ -718,8 +718,8 @@ describe('PerfectWS Full Coverage', () => {
       autoReconnect('ws://localhost:1234', WebSocketMock as any);
 
       // Simulate close event
-      if (closeHandler) {
-        await closeHandler();
+      if (closeHandlers.length > 0) {
+        await Promise.all(closeHandlers.map(handler => handler()));
 
         // Should immediately create new connection (no delay)
         expect(WebSocketMock).toHaveBeenCalledTimes(2);

@@ -319,17 +319,18 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
         abortController.signal.addEventListener('abort', (event) => {
             const hasRequest = this._activeRequests.has(requestId);
-            if (this.config.verbose) {
-                console.warn(`[PerfectWS] Request aborted: method=${method} requestId=${requestId} hasRequest=${hasRequest} reason=${abortController.signal.reason}`);
-            }
+            if (hasRequest && !activeRequest.finished) {
+                if (this.config.verbose) {
+                    console.warn(`[PerfectWS] Request aborted: method=${method} requestId=${requestId} hasRequest=${hasRequest} reason=${abortController.signal.reason}`);
+                }
 
-            if (hasRequest) {
                 const reason = abortController.signal.reason;
                 activeRequest.callback(null, { message: reason, code: 'abort' }, true);
                 if (activeRequest.hasSent) {
                     this._sendJSON({ requestId, event: { eventName: '___abort', args: [abortController.signal.reason || "Client aborted"] } }, activeRequest.server);
                 }
             }
+
             event.preventDefault();
         });
 
