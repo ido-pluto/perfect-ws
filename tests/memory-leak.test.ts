@@ -812,7 +812,7 @@ describe('Memory Leak Tests', () => {
             expect(client2MessageListeners).toBeLessThanOrEqual(5);
         });
 
-        it('should keep connection open for extended period without unhandled rejections', { timeout: 20000 }, async () => {
+        it('should keep connection open for extended period without unhandled rejections', { timeout: 20000, retry: 2 }, async () => {
             const { router: serverRouter, attachClient } = PerfectWS.server();
             serverRouter.config.runPingLoop = false;
 

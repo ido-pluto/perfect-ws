@@ -283,9 +283,13 @@ describe('ACK System Stress & Complex Tests', () => {
             const { router: clientRouter, setServer } = PerfectWS.client();
             clientRouter.config.enableAckSystem = true;
             clientRouter.config.ackTimeout = 200;
+            clientRouter.config.reconnectTimeout = 200;
             clientRouter.config.ackRetryDelays = [100, 200, 300];
 
-            const ws = new WebSocket(`ws://localhost:${port}`);
+            const ws = new WebSocketForce(new WebSocket(`ws://localhost:${port}`));
+            ws.addEventListener('close', () =>{
+                console.log('close');
+            });
             setServer(ws);
             await clientRouter.serverOpen;
 

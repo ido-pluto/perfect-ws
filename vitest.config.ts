@@ -27,5 +27,13 @@ export default defineConfig({
     },
     testTimeout: 10_000, // 2 minutes for long integration tests
     hookTimeout: 20_000,
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        maxForks: 80,
+        minForks: 50,
+        singleFork: true, // Each test file in its own fork
+      }
+    }
   },
 });
