@@ -24,6 +24,7 @@ A robust WebSocket protocol implementation with automatic reconnection, request/
 - 🔌 **Transform System** - Serialize complex objects, functions, and custom classes
 - ⏱️ **Timeout Handling** - Configurable timeouts for requests and connections
 - 🏭 **Sub-routing** - Modular route organization with PerfectWSSubRoute
+- ✅ **ACK System** - Built-in acknowledgment system with automatic retries for reliable message delivery
 
 ## Installation
 
@@ -550,6 +551,10 @@ Configure behavior via the `router.config` object.
   - Were never properly completed or cancelled
 - **Example scenario**: Client browser crashes without sending cleanup signal → after 10 seconds, server removes the orphaned request to prevent memory leak
 
+**`maxActiveRequests`** (default: 10000)
+- **Purpose**: Maximum number of active requests that can be stored in memory.
+- **How it works**: When a client sends a request, it will be stored in memory. If the number of active requests exceeds this limit, the client will reject the request with the error `tooManyRequests`.
+
 **`requestTimeout`** (default: 900000ms / 15 minutes)
 - **Purpose**: Maximum lifetime for any request from a client that disconnects and doesn't reconnect
 - **How it works**: When a client loses connection (network failure, browser close, app crash), their pending requests remain active for this duration. If they reconnect within this time, requests resume; otherwise, they're aborted
@@ -594,6 +599,10 @@ Configure behavior via the `router.config` object.
 - Applies when connection is temporarily unavailable but expected to recover
 - Each retry waits for reconnection before attempting to send again
 
+**`reconnectTimeout`** (default: 60000ms / 1 minute)
+- Maximum time to wait for the server to reconnect after a connection loss
+- If the server does not reconnect within this time, the request is aborted.
+
 **`maxListeners`** (default: 1000)
 - Maximum number of event listeners that can be attached to a WebSocket
 - Prevents memory leaks from accumulating event listeners
@@ -607,6 +616,47 @@ Configure behavior via the `router.config` object.
 **`syncRequestsWhenServerOpen`** (default: true)
 - Whether to sync requests when the server is opened (cancel requests that does not exist on both sides)
 - If false, the server will not sync requests when the server is opened (you can call `syncRequests` method manually to sync requests)
+
+##### ACK System (Acknowledgment)
+
+The ACK system ensures reliable message delivery by requiring acknowledgment for each packet. When enabled, every message gets a unique packet ID and the system automatically retries if acknowledgment is not received.
+
+**`enableAckSystem`** (default: true)
+- Enables the packet acknowledgment system for reliable message delivery
+- When enabled, each message requires an ACK response or will be retried
+
+**`ackTimeout`** (default: 1000ms)
+- Maximum time to wait for acknowledgment before considering the packet lost
+- After this timeout, the system will retry sending the packet
+
+**`ackRetryDelays`** (default: [3000, 5000])
+- Array of delays (in milliseconds) between retry attempts
+- First retry after 3 seconds, second retry after 5 seconds
+- If all retries fail, the request is rejected
+
+**`processedPacketsCleanupInterval`** (default: 60000ms / 1 minute)
+- Interval for cleaning up old processed packet IDs from memory
+- Prevents memory buildup from tracking processed packets
+
+**`maxProcessedPackets`** (default: 10000)
+- Maximum number of processed packet IDs to keep in memory
+- Older entries are removed when this limit is exceeded
+
+**`maxPendingAcks`** (default: 100)
+- Maximum number of pending acknowledgments before cleanup triggers
+- When exceeded, oldest pending ACKs are cleaned up to prevent memory growth
+
+**`maxPendingAcksKept`** (default: 50)
+- Number of newest pending ACKs to keep when cleanup occurs
+- Ensures the most recent ACKs are retained during cleanup
+
+**`maxPendingAborts`** (default: 1000)
+- Maximum number of pending abort entries to track
+- Prevents unbounded memory growth from tracking aborted requests
+
+**`pendingAbortsMinAge`** (default: 3000ms)
+- Minimum age (in milliseconds) before a pending abort entry can be removed
+- Prevents premature cleanup of recently aborted requests
 
 ##### Debugging
 

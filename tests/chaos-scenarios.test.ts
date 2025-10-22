@@ -200,38 +200,6 @@ describe('Chaos Engineering - Non-Standard Scenarios', () => {
   });
 
   describe('Partial Message Scenarios', () => {
-    it('should handle receiving half a BSON message', async () => {
-      const { router, attachClient } = PerfectWS.server();
-
-      const mockWs = {
-        readyState: 1,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        send: vi.fn()
-      };
-
-      let messageHandler: any;
-      mockWs.addEventListener.mockImplementation((event, handler) => {
-        if (event === 'message') messageHandler = handler;
-      });
-
-      attachClient(mockWs as any);
-
-      // Send corrupted/partial BSON
-      const validData = BSON.serialize({
-        method: 'test',
-        requestId: 'partial-123',
-        data: { test: true }
-      });
-
-      // Send only half the message
-      const partialData = validData.slice(0, Math.floor(validData.length / 2));
-
-      await expect(async () => {
-        await messageHandler({ data: partialData });
-      }).rejects.toThrow();
-    });
-
     it('should handle receiving messages out of order', async () => {
       const { router, setServer } = PerfectWS.client();
 

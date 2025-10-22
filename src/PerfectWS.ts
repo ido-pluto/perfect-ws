@@ -14,7 +14,7 @@ const INTERNAL_EVENTS = [
 
 type WSRequestOptionsCallback<Response = any> = (data: Response, error: { message: string, code: string; }, down: boolean) => void;
 
-export type WSListenCallbackSend = (data: any, down?: boolean, allowPackageLoss?: boolean) => void;
+export type WSListenCallbackSend = (data: any, down?: boolean, allowPackageLoss?: boolean) => void | Promise<void>;
 export type WSCallbackOptions = {
     send: WSListenCallbackSend,
     reject: (reason: string, code: string) => void,
@@ -80,6 +80,7 @@ export type WSServerResult<WSType extends WSLike = WSLike, Router extends Perfec
 
 export type PerfectWSConfig = {
     connectionTimeout: number;
+    reconnectTimeout: number;
     clearOldRequestsDelay: number;
     requestTimeout: number;
     syncRequestsTimeout: number;
@@ -94,11 +95,22 @@ export type PerfectWSConfig = {
     syncRequestsWhenServerOpen: boolean;
     abortUnknownResponses: boolean;
     runPingLoop: boolean;
+    enableAckSystem: boolean;
+    ackTimeout: number;
+    ackRetryDelays: number[];
+    processedPacketsCleanupInterval: number;
+    maxProcessedPackets: number;
+    maxPendingAcks: number;
+    maxPendingAcksKept: number;
+    maxPendingAborts: number;
+    pendingAbortsMinAge: number;
+    maxActiveRequests: number;
 };
 
 export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: string]: any; }> {
     public config = {
         connectionTimeout: 1000 * 3,
+        reconnectTimeout: 1000 * 60,
         clearOldRequestsDelay: 1000 * 10,
         requestTimeout: 1000 * 60 * 15,
         syncRequestsTimeout: 1000 * 5,
@@ -112,7 +124,17 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         maxTransformDepth: 100,
         syncRequestsWhenServerOpen: true,
         abortUnknownResponses: true,
-        runPingLoop: true
+        runPingLoop: true,
+        enableAckSystem: true,
+        ackTimeout: 1000,
+        ackRetryDelays: [3000, 5000],
+        processedPacketsCleanupInterval: 1000 * 60,
+        maxProcessedPackets: 10000,
+        maxPendingAcks: 100,
+        maxPendingAcksKept: 50,
+        maxPendingAborts: 1000,
+        pendingAbortsMinAge: 3000,
+        maxActiveRequests: 10000,
     } as PerfectWSConfig & ExtraConfig;
 
     private _server?: WebSocketForce<WSType>;
@@ -124,9 +146,11 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     private _waitForNewServer = new Set<() => void>();
     private _clearOldRequestActive = false;
     private _lastPingTime = 0;
-    private _pendingAborts = new Set<string>();
+    private _pendingAborts = new Map<string, number>(); // requestId -> timestamp
     private _addMiddlewareForNewRequests: WSListenCallback[] = [];
-    private _pingLoopAbortController?: AbortController;
+    private _pendingAcks: Map<string, { resolve: () => void, reject: (reason: string) => void; }> = new Map();
+    private _processedPackets: Map<string, number> = new Map();
+    private _ackCleanupAbortController?: AbortController;
 
     get isServerConnected() {
         return this._server?.readyState == WebSocketForce.OPEN;
@@ -152,13 +176,27 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             throw new PerfectWSError('This is a server instance, you can only use "syncRequests" method on client instance', 'invalidInstance');
         }
 
-        const activeRequestsIds = Array.from(this._activeRequests.entries())
-            .filter(([_, request]) => request.hasSent)
-            .map(([id]) => id);
+        const activeRequestsIds: string[] = [];
+        for (const [id, request] of this._activeRequests.entries()) {
+            if (request.hasSent) {
+                activeRequestsIds.push(id);
+            }
+        }
+
+        if (this.config.verbose) {
+            console.log('[PerfectWS] _syncRequests: activeRequestsIds=', activeRequestsIds);
+        }
+
         const unknownActiveRequestsIds = await this.request("___syncRequests", { activeRequestsIds }, { doNotWaitForConnection: true, timeout: this.config.syncRequestsTimeout, useServer });
+        if (this.config.verbose) {
+            console.log('[PerfectWS] _syncRequests: unknownActiveRequestsIds=', unknownActiveRequestsIds);
+        }
         for (const requestId of unknownActiveRequestsIds) {
             const request = this._activeRequests.get(requestId);
             if (!request) continue;
+            if (this.config.verbose) {
+                console.log('[PerfectWS] _syncRequests: calling callback for requestId=', requestId);
+            }
             request.callback(null, { message: 'Unknown request', code: 'unknownRequest' }, true);
         }
     }
@@ -182,6 +220,9 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     private __initPrivateMethods() {
         this.on("___syncRequests", ({ activeRequestsIds }: { activeRequestsIds: string[]; }, { requestId: currentRequestId }) => {
             const activeResponses = Array.from(this._activeResponses.entries());
+            if (this.config.verbose) {
+                console.log('[PerfectWS] ___syncRequests: activeResponses=', activeResponses);
+            }
 
             for (const [requestId, response] of activeResponses) {
                 // Don't abort the current request we're processing
@@ -193,7 +234,11 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             }
 
             const activeResponseIds = activeResponses.map(([id]) => id);
-            return activeRequestsIds.filter(x => !activeResponseIds.includes(x));
+            const unknownActiveRequestsIds = activeRequestsIds.filter(x => !activeResponseIds.includes(x));
+            if (this.config.verbose) {
+                console.log('[PerfectWS] ___syncRequests: unknownActiveRequestsIds=', unknownActiveRequestsIds);
+            }
+            return unknownActiveRequestsIds;
         });
 
         this.on("___hasRequest", ({ requestId }: { requestId: string; }) => {
@@ -204,12 +249,13 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             this._lastPingTime = Date.now();
             return "pong";
         });
+
     }
 
     private _setServer(originalServer: WebSocketForce<WSType> | WSType) {
         this._unregisterServer?.();
 
-        this._pingLoopAbortController?.abort('New server set');
+        this._ackCleanupAbortController?.abort('New server set');
 
         const server = originalServer instanceof WebSocketForce ? originalServer : new WebSocketForce(originalServer);
 
@@ -220,10 +266,17 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         server.setMaxListeners(this.config.maxListeners);
 
         const pingLoopAbortController = new AbortController();
-        this._pingLoopAbortController = pingLoopAbortController;
+
+        const ackCleanupAbortController = new AbortController();
+        this._ackCleanupAbortController = ackCleanupAbortController;
+        this._startAckCleanupLoop(ackCleanupAbortController);
 
         const onMessage = ({ data }: MessageEvent) => {
             const parsedData = this.deserialize(data);
+            if (parsedData === null) {
+                // Corrupted data - ignore
+                return;
+            }
             this._onServerResponse(parsedData, server);
         };
 
@@ -269,6 +322,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
         this._unregisterServer = () => {
             pingLoopAbortController.abort('Server unregistered');
+            ackCleanupAbortController.abort('Server unregistered');
             server.removeEventListener('message', onMessage);
             server.removeEventListener('open', onOpen);
         };
@@ -306,7 +360,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 if (down) {
                     activeRequest.finished = true;
                     events.emit('request.finished', { data, error, requestId });
-                    if(hasSetRequest){
+                    if (hasSetRequest) {
                         this._activeRequests.delete(requestId);
                     }
                     if (error != null) {
@@ -330,7 +384,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 const reason = abortController.signal.reason;
                 activeRequest.callback(null, { message: reason, code: 'abort' }, true);
                 if (activeRequest.hasSent) {
-                    this._sendJSON({ requestId, event: { eventName: '___abort', args: [abortController.signal.reason || "Client aborted"] } }, activeRequest.server);
+                    this._sendWithAck({ requestId, event: { eventName: '___abort', args: [abortController.signal.reason || "Client aborted"] } }, activeRequest.server);
                 }
             }
 
@@ -352,6 +406,11 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             return await promise;
         }
 
+        if (this._activeRequests.size >= this.config.maxActiveRequests) {
+            activeRequest.callback(null!, { message: 'Too many active requests', code: 'tooManyRequests' }, true);
+            return await promise;
+        }
+
         this._activeRequests.set(requestId, activeRequest);
         hasSetRequest = true;
         this._clearOldRequests();
@@ -363,7 +422,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 if (activeRequest.hasSent) {
                     if (this._activeRequests.has(requestId)) {
                         activeRequest.callback(null, { message: 'Request timeout', code: 'timeout' }, true);
-                        this._sendJSON({ requestId, event: { eventName: '___abort', args: ["Request timeout"] } }, activeRequest.server);
+                        this._sendWithAck({ requestId, event: { eventName: '___abort', args: ["Request timeout"] } }, activeRequest.server);
                     }
                 } else {
                     activeRequest.callback(null, { message: 'Request connecting timeout', code: 'timeout' }, true);
@@ -375,7 +434,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             });
         }
 
-        const waitForServer = () => new Promise<void>((resolve, reject) => {
+        const waitForServer = (firstTime = true) => new Promise<void>((resolve, reject) => {
             if (activeRequest.server != this._server || activeRequest.finished || abortController.signal.aborted) {
                 resolve();
                 return;
@@ -401,8 +460,13 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             const onServer = () => settleResolve();
             const onAbort = (e: any) => settleReject(e);
             const onFinished = () => settleResolve();
+            const onTimeout = () => settleReject({ message: 'Server not connected', code: 'serverClosed' });
+            let timeout: NodeJS.Timeout;
 
             cleanup = () => {
+                if (timeout) {
+                    clearTimeout(timeout);
+                }
                 this._waitForNewServer.delete(onServer);
                 abortController.signal.removeEventListener('abort', onAbort);
                 events.off('request.finished', onFinished);
@@ -411,6 +475,10 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             this._waitForNewServer.add(onServer);
             abortController.signal.addEventListener('abort', onAbort);
             events.on('request.finished', onFinished);
+
+            if (!firstTime) {
+                timeout = setTimeout(onTimeout, this.config.reconnectTimeout);
+            }
         });
 
 
@@ -429,25 +497,25 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             activeRequest.server = this._server!;
         }
 
-        const sendRequestRetry = async (content: any, retryLefts = this.config.sendRequestRetries) => {
+        const sendRequestRetry = async (content: any) => {
             const serializeData = this.serializeRequestData(content, events);
 
             for (let i = 0; i < this.config.sendRequestRetries; i++) {
-                if (this._sendJSON(serializeData, activeRequest.server)) {
-                    break;
+                if (await this._sendWithAck(serializeData, activeRequest.server)) {
+                    return;
                 }
 
-                if (retryLefts && activeRequest.server.readyState != WebSocketForce.OPEN && !activeRequest.doNotWaitForConnection) {
+                if (activeRequest.server.readyState != WebSocketForce.OPEN && !activeRequest.doNotWaitForConnection) {
                     events.emit('request.disconnected', { ws: activeRequest.server });
-                    await waitForServer();
+                    await waitForServer(false);
                     if (activeRequest.finished || abortController.signal.aborted) return;
                     activeRequest.server = this._server!;
                     events.emit('request.connected', { ws: activeRequest.server });
                     continue;
                 }
-
-                activeRequest.callback(null, { message: 'Failed to send request', code: 'sendFailed' }, true);
             }
+
+            activeRequest.callback(null, { message: 'Failed to send request', code: 'sendFailed' }, true);
         };
 
         events.onAny((source, eventName, ...args) => {
@@ -469,7 +537,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             };
 
             try {
-                await waitForServer();
+                await waitForServer(false);
                 if (activeRequest.finished) {
                     return;
                 }
@@ -520,7 +588,15 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     }
 
     protected deserialize(data: any) {
-        return BSON.deserialize(data);
+        try {
+            return BSON.deserialize(data);
+        } catch (error) {
+            if (this.config.verbose) {
+                console.log(`[PerfectWS] deserialize: BSON deserialization failed:`, error);
+            }
+            // Return null for corrupted data - the message handler should ignore it
+            return null;
+        }
     }
 
     protected serializeRequestData(data: any, events: NetworkEventListener) {
@@ -540,7 +616,6 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             if (this.config.verbose) console.log(`[PerfectWS] _sendData: server not OPEN, readyState=${server?.readyState}`);
             return false;
         }
-
         try {
             server.send(data);
             return true;
@@ -550,8 +625,127 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         }
     }
 
+    private async _sendWithAck(data: any, server = this._server, allowPackageLoss = false): Promise<boolean> {
+        if (data.method === '___ack') {
+            return this._sendJSON(data, server);
+        }
+
+        if (!this.config.enableAckSystem || allowPackageLoss) {
+            return this._sendJSON(data, server);
+        }
+
+        const packetId = uuid();
+        const dataWithPacketId = { ...data, packetId };
+
+        let lastError = 'Unknown error';
+
+        for (let attempt = -1; attempt < this.config.ackRetryDelays.length; attempt++) {
+            const attemptLog = attempt + 2;
+            if (!server || server.readyState !== WebSocketForce.OPEN) {
+                lastError = 'Server not connected';
+                if (this.config.verbose) console.log(`[PerfectWS] _sendWithAck: server not OPEN on attempt ${attemptLog}`);
+                return false;
+            }
+
+            if (this.config.verbose) {
+                console.log(`[PerfectWS] _sendWithAck: attempt ${attemptLog}/${this.config.ackRetryDelays.length + 1}, packetId=${packetId}`);
+            }
+
+            const sent = this._sendJSON(dataWithPacketId, server);
+            if (!sent) {
+                lastError = 'Failed to send packet';
+                if (this.config.verbose) console.log(`[PerfectWS] _sendWithAck: send failed on attempt ${attemptLog}`);
+                return false;
+            }
+            try {
+                const ackReceived = await new Promise<boolean>((resolve, reject) => {
+                    let timeoutId: NodeJS.Timeout | null = null;
+                    let resolved = false;
+
+                    const cleanup = () => {
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            timeoutId = null;
+                        }
+                        this._pendingAcks.delete(packetId);
+                    };
+
+                    this._pendingAcks.set(packetId, {
+                        resolve: () => {
+                            if (resolved) return;
+                            resolved = true;
+                            cleanup();
+                            resolve(true);
+                        },
+                        reject: (reason: string) => {
+                            if (resolved) return;
+                            resolved = true;
+                            cleanup();
+                            reject(new Error(reason));
+                        }
+                    });
+
+                    timeoutId = setTimeout(() => {
+                        if (resolved) return;
+                        resolved = true;
+                        cleanup();
+                        resolve(false);
+                    }, this.config.ackRetryDelays[attempt] ?? this.config.ackTimeout);
+                });
+
+                if (ackReceived) {
+                    if (this.config.verbose) console.log(`[PerfectWS] _sendWithAck: ACK received for packetId=${packetId}`);
+                    return true;
+                }
+
+                lastError = 'ACK timeout';
+                if (this.config.verbose) console.log(`[PerfectWS] _sendWithAck: ACK timeout on attempt ${attemptLog}`);
+            } catch (error: any) {
+                lastError = error.message || 'ACK error';
+                if (this.config.verbose) console.log(`[PerfectWS] _sendWithAck: ACK error:`, error);
+            }
+        }
+
+        if (this.config.verbose) {
+            console.log(`[PerfectWS] _sendWithAck: all retries exhausted for packetId=${packetId}, lastError=${lastError}`);
+            console.log(`[PerfectWS] _sendWithAck: force closing server for packetId=${packetId}, lastError=${lastError}`);
+        }
+
+        server!.forceClose();
+
+        return false;
+    }
+
     private _onServerResponse(data: any, socket: WebSocketForce<WSType>) {
-        const { requestId, data: responseData, error, down, event } = data;
+        const { requestId, data: responseData, error, down, event, packetId, method } = data;
+
+        // FIRST: Handle ACK messages - they should never trigger an ACK response
+        if (method === '___ack') {
+            const { ackFor } = responseData as { ackFor: string; };
+            const pending = this._pendingAcks.get(ackFor);
+            if (pending) {
+                this._pendingAcks.delete(ackFor);
+                pending.resolve();
+                if (this.config.verbose) {
+                    console.log(`[PerfectWS] _onServerResponse: resolved ack for packetId=${ackFor}`);
+                }
+            }
+            return;
+        }
+
+        // THEN: Handle ACK system for non-ACK messages
+        if (this.config.enableAckSystem && packetId) {
+            if (this._processedPackets.has(packetId)) {
+                if (this.config.verbose) console.log(`[PerfectWS] _onServerResponse: duplicate packet ignored, packetId=${packetId}`);
+                // IMPORTANT: Still send ACK for duplicates! The server is retrying because it didn't receive the ACK.
+                this._sendJSON({ requestId, method: '___ack', data: { ackFor: packetId } }, socket);
+                return;
+            }
+
+            this._processedPackets.set(packetId, Date.now());
+            this._sendJSON({ requestId, method: '___ack', data: { ackFor: packetId } }, socket);
+        }
+
         const request = this._activeRequests.get(requestId);
 
         if (!request) {
@@ -566,7 +760,13 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
         if (event) {
             event.args = this.deserializeRequestData(event.args, request.events);
-            request.events._emitWithSource(event.eventName, 'remote', ...event.args);
+            try {
+                request.events._emitWithSource(event.eventName, 'remote', ...event.args);
+            } catch (error) {
+                if (this.config.verbose) {
+                    console.error(`[PerfectWS] _onServerResponse: Error in event listener for ${event.eventName}:`, error);
+                }
+            }
             return;
         }
 
@@ -574,7 +774,32 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
     }
 
     private async _onRequest(clientData: any, client: WebSocketForce<WSType>): Promise<void> {
-        const { method, requestId, data, event } = clientData;
+        const { method, requestId, data, event, packetId } = clientData;
+
+        // FIRST: Handle ACK messages - they should never trigger an ACK response
+        if (method === '___ack' && data && typeof data === 'object' && 'ackFor' in data && typeof data.ackFor === 'string') {
+            const { ackFor } = data as { ackFor: string; };
+            const pending = this._pendingAcks.get(ackFor);
+            if (pending) {
+                this._pendingAcks.delete(ackFor);
+                pending.resolve();
+                if (this.config.verbose) {
+                    console.log(`[PerfectWS] _onRequest: resolved ack for packetId=${ackFor}`);
+                }
+            }
+            return;
+        }
+
+        if (this.config.enableAckSystem && packetId) {
+            if (this._processedPackets.has(packetId)) {
+                if (this.config.verbose) console.log(`[PerfectWS] _onRequest: duplicate packet ignored, packetId=${packetId}`);
+                this._sendJSON({ requestId, method: '___ack', data: { ackFor: packetId } }, client);
+                return;
+            }
+
+            this._processedPackets.set(packetId, Date.now());
+            this._sendJSON({ requestId, method: '___ack', data: { ackFor: packetId } }, client);
+        }
 
         if (this.config.verbose) console.log(`[PerfectWS] _onRequest: requestId=${requestId} method=${method} hasRequest=${this._activeResponses.has(requestId)}`);
 
@@ -582,7 +807,13 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             const { events, clients } = this._activeResponses.get(requestId)!;
             if (event) {
                 event.args = this.deserializeRequestData(event.args, events);
-                events._emitWithSource(event.eventName, 'remote', ...event.args);
+                try {
+                    events._emitWithSource(event.eventName, 'remote', ...event.args);
+                } catch (error) {
+                    if (this.config.verbose) {
+                        console.error(`[PerfectWS] _onRequest: Error in event listener for ${event.eventName}:`, error);
+                    }
+                }
                 return;
             }
 
@@ -598,7 +829,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
             const requestFinished = () => {
                 client.removeEventListener('close', closeListener);
-            }
+            };
 
             client.addEventListener('close', closeListener);
             events.once('request.finished', requestFinished);
@@ -626,57 +857,61 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
                 if (allowPackageLoss) {
                     for (const client of clientListen) {
-                        this._sendJSON(serializedData, client);
+                        this._sendWithAck(serializedData, client, true);
                     }
                     return;
                 }
 
-                if (clientListen.size === 0) {
-                    if (this.config.verbose) console.log(`[PerfectWS] sendJSON: clientListen is empty, waiting...`);
-                    const timePassedSinceLastSend = Date.now() - pingDisconnected;
-                    const timeLeft = Math.max(0, this.config.requestTimeout - timePassedSinceLastSend);
-
-                    if (timeLeft < 0) {
-                        if (this.config.verbose) console.log(`[PerfectWS] sendJSON: timeLeft < 0, returning false`);
-                        return false;
-                    }
-
-                    const raceResult = await new Promise<'added' | 'timeout'>((resolve) => {
-                        let settled = false;
-
-                        const settle = (result: 'added' | 'timeout') => {
-                            if (settled) return;
-                            settled = true;
-                            cleanup();
-                            resolve(result);
-                        };
-
-                        const onClientAdded = () => settle('added');
-                        const onTimeout = () => settle('timeout');
-
-                        const cleanup = () => {
-                            events.off('request.connected', onClientAdded);
-                            clearTimeout(timeoutId);
-                        };
-
-                        events.on('request.connected', onClientAdded);
-                        const timeoutId = setTimeout(onTimeout, timeLeft);
-                    });
-
-                    if (raceResult === 'timeout') {
-                        abortController.abort('sendTimeout');
-                        return false;
-                    }
-                }
-
-                if (this.config.verbose) console.log(`[PerfectWS] sendJSON: sending to ${clientListen.size} clients`);
                 let messageSent = false;
-                for (const client of clientListen) {
-                    const sent = this._sendJSON(serializedData, client);
-                    if (this.config.verbose) console.log(`[PerfectWS] sendJSON: _sendJSON returned`, sent);
-                    if (sent) {
-                        messageSent = true;
+                for (let i = 0; i < this.config.sendRequestRetries; i++) {
+                    if (clientListen.size === 0) {
+                        if (this.config.verbose) console.log(`[PerfectWS] sendJSON: clientListen is empty, waiting...`);
+                        const timePassedSinceLastSend = Date.now() - pingDisconnected;
+                        const timeLeft = Math.max(0, this.config.requestTimeout - timePassedSinceLastSend);
+
+                        if (timeLeft < 0) {
+                            if (this.config.verbose) console.log(`[PerfectWS] sendJSON: timeLeft < 0, returning false`);
+                            return false;
+                        }
+
+                        const raceResult = await new Promise<'added' | 'timeout'>((resolve) => {
+                            let settled = false;
+
+                            const settle = (result: 'added' | 'timeout') => {
+                                if (settled) return;
+                                settled = true;
+                                cleanup();
+                                resolve(result);
+                            };
+
+                            const onClientAdded = () => settle('added');
+                            const onTimeout = () => settle('timeout');
+
+                            const cleanup = () => {
+                                events.off('request.connected', onClientAdded);
+                                clearTimeout(timeoutId);
+                            };
+
+                            events.on('request.connected', onClientAdded);
+                            const timeoutId = setTimeout(onTimeout, timeLeft);
+                        });
+
+                        if (raceResult === 'timeout') {
+                            abortController.abort('sendTimeout');
+                            return false;
+                        }
                     }
+
+                    if (this.config.verbose) console.log(`[PerfectWS] sendJSON: sending to ${clientListen.size} clients`);
+                    for (const client of clientListen) {
+                        const sent = await this._sendWithAck(serializedData, client, allowPackageLoss);
+                        if (this.config.verbose) console.log(`[PerfectWS] sendJSON: _sendWithAck returned`, sent);
+                        if (sent) {
+                            messageSent = true;
+                        }
+                    }
+
+                    if (messageSent) break;
                 }
 
                 if (!messageSent) {
@@ -692,7 +927,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
         if (event) {
             if (event.eventName === '___abort') {
-                this._pendingAborts.add(requestId);
+                this._pendingAborts.set(requestId, Date.now());
                 return;
             }
             sendJSON({ error: { message: `Request not found`, code: 'requestNotFound' }, requestId, down: true });
@@ -737,7 +972,9 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             if (this._pendingAborts.has(requestId)) {
                 if (this.config.verbose) console.log(`[PerfectWS] _onRequest: early abort detected`);
                 this._pendingAborts.delete(requestId);
-                abortController.abort('Client aborted');
+                // Return error immediately instead of processing the request
+                sendJSON({ error: { message: 'Request aborted by client', code: 'abort' }, requestId, down: true });
+                return;
             }
 
             if (this.config.verbose) console.log(`[PerfectWS] _onRequest: calling handler for method=${method}`);
@@ -836,13 +1073,86 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                     }
                 }
 
-                // Wait for all hasRequest checks to complete
                 await Promise.all(promises);
+
+                const now = Date.now();
+                for (const [requestId, timestamp] of this._pendingAborts) {
+                    if (now - timestamp > this.config.pendingAbortsMinAge) {
+                        if (!this._activeResponses.has(requestId) && !this._activeRequests.has(requestId)) {
+                            this._pendingAborts.delete(requestId);
+                            if (this.config.verbose) {
+                                console.log(`[PerfectWS] _clearOldRequests: cleaned up pending abort for requestId=${requestId}`);
+                            }
+                        }
+                    }
+                }
+
+                if (this._pendingAborts.size > this.config.maxPendingAborts) {
+                    const toKeep = new Map<string, number>();
+                    for (const [requestId, timestamp] of this._pendingAborts) {
+                        if ((this._activeResponses.has(requestId) || this._activeRequests.has(requestId)) ||
+                            (now - timestamp <= this.config.pendingAbortsMinAge)) {
+                            toKeep.set(requestId, timestamp);
+                        }
+                    }
+                    this._pendingAborts = toKeep;
+                    if (this.config.verbose) {
+                        console.log(`[PerfectWS] _clearOldRequests: limited _pendingAborts to ${this._pendingAborts.size} entries`);
+                    }
+                }
 
                 await sleep(this.config.clearOldRequestsDelay);
             }
         } finally {
             this._clearOldRequestActive = false;
+        }
+    }
+
+    private async _startAckCleanupLoop(abortController: AbortController) {
+        while (!abortController.signal.aborted) {
+            await sleep(this.config.processedPacketsCleanupInterval);
+
+            if (abortController.signal.aborted) break;
+
+            if (this.config.enableAckSystem && this._processedPackets.size > this.config.maxProcessedPackets) {
+                const sortedEntries = Array.from(this._processedPackets.entries())
+                    .sort((a, b) => b[1] - a[1]);
+
+                const toKeep = sortedEntries.slice(0, this.config.maxProcessedPackets);
+                this._processedPackets.clear();
+                for (const [packetId, timestamp] of toKeep) {
+                    this._processedPackets.set(packetId, timestamp);
+                }
+
+                if (this.config.verbose) {
+                    console.log(`[PerfectWS] Cleaned up processed packets, kept ${this._processedPackets.size} entries`);
+                }
+            }
+
+            // Clean up old pending ACKs (stuck ACKs that never received response)
+            // Limit the total size to prevent memory leaks
+            if (this._pendingAcks.size > this.config.maxPendingAcks) {
+                let cleanupCount = 0;
+                const toDelete: string[] = [];
+
+                for (const [packetId] of this._pendingAcks.entries()) {
+                    if (cleanupCount >= this._pendingAcks.size - this.config.maxPendingAcksKept) break; // Keep only the configured number of newest
+                    toDelete.push(packetId);
+                    cleanupCount++;
+                }
+
+                for (const packetId of toDelete) {
+                    const ackHandler = this._pendingAcks.get(packetId);
+                    if (ackHandler) {
+                        ackHandler.reject('ACK cleanup - too many pending');
+                        this._pendingAcks.delete(packetId);
+                    }
+                }
+
+                if (this.config.verbose && cleanupCount > 0) {
+                    console.log(`[PerfectWS] Cleaned up ${cleanupCount} stuck ACKs, kept ${this._pendingAcks.size}`);
+                }
+            }
         }
     }
 
@@ -901,7 +1211,13 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         const router = this._newInstance<WSType>();
         const unregisterFunctions: (() => void)[] = [];
 
+        // Start ACK cleanup loop for server
+        const ackCleanupAbortController = new AbortController();
+        router._ackCleanupAbortController = ackCleanupAbortController;
+        router._startAckCleanupLoop(ackCleanupAbortController);
+
         const unregister = () => {
+            ackCleanupAbortController.abort('Server unregistered');
             for (const unregisterFunction of unregisterFunctions) {
                 unregisterFunction();
             }
@@ -941,6 +1257,10 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
             const onMessage = ({ data }: MessageEvent) => {
                 const parsedData = router.deserialize(data);
+                if (parsedData === null) {
+                    // Corrupted data - ignore
+                    return;
+                }
                 router._onRequest(parsedData, socketAsWSForce);
             };
 

@@ -408,32 +408,6 @@ describe('Memory Leak Tests', () => {
             }
         });
 
-        it('should clean up ping loop abort controller', async () => {
-            const { router: serverRouter, attachClient } = PerfectWS.server();
-            serverRouter.config.runPingLoop = false;
-            serverRouter.on('___ping', () => 'pong');
-
-            server.on('connection', (ws) => {
-                attachClient(ws);
-            });
-
-            const { router: clientRouter } = PerfectWS.client();
-            clientRouter.config.runPingLoop = true;
-
-            const ws1 = new WebSocket(`ws://localhost:${port}`);
-            clientRouter['_setServer'](ws1);
-            await clientRouter.serverOpen;
-
-            const abortController1 = clientRouter['_pingLoopAbortController'];
-            expect(abortController1).toBeDefined();
-            expect(abortController1?.signal.aborted).toBe(false);
-
-            const ws2 = new WebSocket(`ws://localhost:${port}`);
-            clientRouter['_setServer'](ws2);
-
-            expect(abortController1?.signal.aborted).toBe(true);
-        });
-
         it('should clean up NetworkEventListener on request completion', async () => {
             const { router: serverRouter, attachClient } = PerfectWS.server();
             serverRouter.config.runPingLoop = false;
