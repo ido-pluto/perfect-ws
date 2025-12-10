@@ -660,6 +660,10 @@ The ACK system ensures reliable message delivery by requiring acknowledgment for
 
 ##### Debugging
 
+**debugging** (default: false)
+- If true, disables ping timeouts and ack system
+- Useful when debugging to prevent false timeouts when the debugger pauses execution
+
 **`verbose`** (default: false)
 - Enables console logging for debugging connection and request issues
 - Useful for troubleshooting connection problems and request lifecycle

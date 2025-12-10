@@ -40,7 +40,11 @@ export type WSClientOptions = {
     /**
      * If true, unknown responses will be ignored and not aborted, and will not sync request when server is opened
      */
-    temp: boolean;
+    temp?: boolean;
+    /**
+     * If true, disables ping timeouts and ack system (when the debugger is paused, pings and acks may timeout)
+     */
+    debugging?: boolean;
 };
 
 type ActiveRequest<WSType extends WSLike> = {
@@ -1193,6 +1197,11 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             if (config.temp) {
                 router.config.syncRequestsWhenServerOpen = false;
                 router.config.abortUnknownResponses = false;
+            }
+            
+            if(config.debugging) {
+                router.config.runPingLoop = false;
+                router.config.enableAckSystem = false;
             }
         }
 
