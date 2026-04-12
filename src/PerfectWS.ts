@@ -281,6 +281,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 // Corrupted data - ignore
                 return;
             }
+            data = null;
             this._onServerResponse(parsedData, server);
         };
 
@@ -1270,6 +1271,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                     // Corrupted data - ignore
                     return;
                 }
+                data = null;
                 router._onRequest(parsedData, socketAsWSForce);
             };
 
