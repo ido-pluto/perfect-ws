@@ -268,6 +268,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         } catch { }
 
         server.setMaxListeners(this.config.maxListeners);
+        server.binaryType = 'arraybuffer';
 
         const pingLoopAbortController = new AbortController();
 
@@ -1199,8 +1200,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 router.config.syncRequestsWhenServerOpen = false;
                 router.config.abortUnknownResponses = false;
             }
-            
-            if(config.debugging) {
+
+            if (config.debugging) {
                 router.config.runPingLoop = false;
                 router.config.enableAckSystem = false;
             }
@@ -1261,9 +1262,8 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
         const attachClient = (socket: WSType | WSLike) => {
             const socketAsWSForce = socket instanceof WebSocketForce ? socket : new WebSocketForce(socket);
 
-            if ('setMaxListeners' in socketAsWSForce && typeof socketAsWSForce.setMaxListeners == 'function') {
-                socketAsWSForce.setMaxListeners(router.config.maxListeners);
-            }
+            socketAsWSForce.setMaxListeners(router.config.maxListeners);
+            socketAsWSForce.binaryType = 'arraybuffer';
 
             const onMessage = ({ data }: MessageEvent) => {
                 const parsedData = router.deserialize(data);
@@ -1298,7 +1298,6 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                 while (!stopReconnecting) {
                     const socket = new webSocketConstructor(url);
                     socketAsWSForce = socket instanceof WebSocketForce ? socket : new WebSocketForce(socket);
-                    socketAsWSForce.binaryType = 'arraybuffer';
 
                     const cleanup = attachClient(socketAsWSForce);
                     await Promise.race([socketAsWSForce.once('error'), socketAsWSForce.once('close')]);
