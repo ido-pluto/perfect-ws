@@ -7,13 +7,14 @@ export default defineConfig({
     globals: true,
     setupFiles: ['tests/setupTests.ts'],
     include: ['tests/**/*.test.ts', 'tests/**/*.spec.ts'],
+    exclude: ['tests/browser/**'],
     projects: [
       {
         extends: true,
         test: {
           name: 'integration',
           include: ['tests/integration/**/*.test.ts'],
-          exclude: ['tests/*.test.ts', 'tests/*.spec.ts'],
+          exclude: ['tests/*.test.ts', 'tests/*.spec.ts', 'tests/browser/**'],
           environment: 'node',
         },
       },
@@ -22,7 +23,7 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['tests/*.test.ts', 'tests/*.spec.ts'],
-          exclude: ['tests/integration/**'],
+          exclude: ['tests/integration/**', 'tests/browser/**'],
           environment: 'happy-dom',
         },
       },

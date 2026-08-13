@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Binary } from 'bson';
 import { TransformAbortSignal } from '../src/PerfectWSAdvanced/transform/TransformAbortSignal.js';
 import { TransformBinaryData } from '../src/PerfectWSAdvanced/transform/TransformBinaryData.js';
 import { TransformCallbacks } from '../src/PerfectWSAdvanced/transform/TransformCallbacks.js';
@@ -163,6 +164,7 @@ describe('remaining transform safety paths', () => {
         expect([...anyTransform._extractBytes({ buffer: new ArrayBuffer(2) })]).toEqual([0, 0]);
         expect([...anyTransform._extractBytes({ constructor: { name: 'Binary' }, buffer: new ArrayBuffer(2) })]).toEqual([0, 0]);
         expect([...anyTransform._extractBytes(new Uint8Array([1, 2]))]).toEqual([1, 2]);
+        expect([...anyTransform._extractBytes(new Binary(new Uint8Array([2, 3])))]).toEqual([2, 3]);
         expect([...anyTransform._extractBytes(new ArrayBuffer(2))]).toEqual([0, 0]);
         expect([...anyTransform._extractBytes([3, 4])]).toEqual([3, 4]);
         expect(anyTransform._restoreType('UnknownBinaryType', new Uint8Array([5]))).toEqual(new Uint8Array([5]));
@@ -182,8 +184,9 @@ describe('remaining transform safety paths', () => {
         (TransformBinaryData as any).HAS_BUFFER = false;
         try {
             expect(serializeWith(transform, new Uint8Array([8, 9])).data).toBeInstanceOf(Uint8Array);
+            expect([...anyTransform._extractBytes(new Binary(new Uint8Array([2, 3])))]).toEqual([2, 3]);
             expect([...anyTransform._extractBytes([6, 7])]).toEqual([6, 7]);
-            expect([...anyTransform._extractBytes({ constructor: { name: 'Binary' }, buffer: new Uint8Array([4]) })]).toEqual([]);
+            expect([...anyTransform._extractBytes({ constructor: { name: 'Binary' }, buffer: new Uint8Array([4]) })]).toEqual([4]);
         } finally {
             (TransformBinaryData as any).HAS_BUFFER = originalHasBuffer;
         }

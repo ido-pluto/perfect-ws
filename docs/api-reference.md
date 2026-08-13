@@ -2,6 +2,8 @@
 
 The core protocol API: types, the two ways to get a router, request/handler signatures, and the full `router.config` reference. For the recommended way to actually set up a connection, see [Authentication](authentication.md) - this page documents what `.router` (on `ServerHost`/`ClientHost`/`RemoteClient`/`RemoteServer`) gives you underneath, and applies equally if you use `PerfectWS`/`PerfectWSAdvanced` directly.
 
+In a browser, import the core API from `perfect-ws/browser`. Condition-aware bundlers also select this entry for `perfect-ws`. Authentication hosts are Node-only; see [Browser clients](browser.md).
+
 ## Types
 
 ```typescript

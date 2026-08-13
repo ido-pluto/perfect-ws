@@ -1,0 +1,25 @@
+{
+  "name": "perfect-ws-browser-acceptance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "npm --prefix ../.. run build",
+    "test": "npm run typecheck && npm run build && vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.browser.json",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "perfect-ws": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.0",
+    "@types/ws": "^8.18.1",
+    "@vitest/browser-playwright": "^4.1.10",
+    "playwright": "^1.55.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.1",
+    "vitest": "^4.1.10",
+    "ws": "^8.21.2"
+  }
+}

@@ -199,7 +199,7 @@ describe('PerfectWS Extended Coverage', () => {
       });
 
       expect(result).toEqual({ response: 'test' });
-      expect(callback).toHaveBeenCalledWith({ response: 'test' }, undefined, true);
+      expect(callback).toHaveBeenCalledWith({ response: 'test' }, null, true);
     });
 
     it('should handle request with events', async () => {

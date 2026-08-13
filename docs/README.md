@@ -7,6 +7,7 @@ For practical examples, use [Common use cases](common-use-cases.md). It covers a
 Open the other guides only when you need that feature:
 
 - [Authentication](authentication.md) - credentials, rate limiting, reconnect options, lifecycle hooks, and reverse connections
+- [Browser clients](browser.md) - native browser WebSockets connected to a Node server
 - [Middleware and routing](middleware-and-routing.md) - validation, shared middleware, and route groups
 - [Reconnection and streaming](reconnection-and-streaming.md) - keeping active streams alive across a reconnect
 - [Serialization and transforms](serialization-and-transforms.md) - callbacks, binary/native types, circular data, and custom classes

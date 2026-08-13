@@ -3,7 +3,8 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { PerfectWSAdvanced, PureRPC } from '../../dist/index.js';
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-const progress = stage => process.stderr.write(`[rpc-gc] ${stage}\n`);
+const fixtureStartedAt = Date.now();
+const progress = stage => process.stderr.write(`[rpc-gc +${ Date.now() - fixtureStartedAt }ms] ${stage}\n`);
 
 async function collect(rounds = 60) {
     for (let index = 0; index < rounds; index++) {

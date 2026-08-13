@@ -14,11 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tests/browser/package-lock.json
       - name: Install modules
         run: npm ci --ignore-scripts
       - name: Build
@@ -29,6 +32,14 @@ jobs:
         run: npm run generate-coverage-badge
       - name: Verify package contents
         run: npm run test:package
+      - name: Install browser acceptance modules
+        working-directory: tests/browser
+        run: npm ci --ignore-scripts
+      - name: Install Chromium
+        working-directory: tests/browser
+        run: npx playwright install --with-deps chromium
+      - name: Test browser and Node interoperability
+        run: npm run test:browser
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -57,8 +68,8 @@ jobs:
     needs:
       - build
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       - name: Install modules

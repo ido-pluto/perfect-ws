@@ -17,7 +17,7 @@ PerfectWS includes password authentication, automatic reconnection, request time
 
 ## Install
 
-PerfectWS requires Node.js 22 or newer.
+The Node side requires Node.js 22 or newer. Browser clients use the browser entry in modern browsers with native WebSocket support.
 
 ```bash
 npm install perfect-ws
@@ -31,9 +31,12 @@ Create a server and register the methods clients may call:
 // server.ts
 import { ServerHost } from 'perfect-ws';
 
+const debugging = process.env.NODE_ENV !== 'production';
+
 const host = new ServerHost({
   port: 8080,
   password: 'shared-secret',
+  debugging,
 });
 
 host.router.on('greet', ({ name }: { name: string }) => {
@@ -49,9 +52,12 @@ Connect a client and call the method:
 // client.ts
 import { RemoteClient } from 'perfect-ws';
 
+const debugging = process.env.NODE_ENV !== 'production';
+
 const remote = new RemoteClient({
   url: 'ws://localhost:8080',
   password: 'shared-secret',
+  debugging,
 });
 
 remote.start();
@@ -59,6 +65,12 @@ remote.start();
 const result = await remote.router.request('greet', { name: 'Ada' });
 console.log(result.message); // Hello, Ada!
 ```
+
+### Debugging without false reconnects
+
+Keep `debugging: true` while stepping through local code. A breakpoint pauses the JavaScript event loop, so normal ping and ACK deadlines can otherwise mistake the pause for a dead connection, close the socket, and start reconnecting while you debug. Debugging mode disables those liveness checks and logs the authentication flow.
+
+The example enables it whenever `NODE_ENV` is not `production`. Never enable it in production: disabling pings and ACKs also disables important dead-connection detection and packet-delivery recovery. Pass the flag on both peers. For a Vite browser client, the equivalent is `PerfectWS.client(socket, { debugging: import.meta.env.DEV })`.
 
 Requests wait for the connection by default, so they can be made immediately after `remote.start()`. Call `remote.stop()` and `host.stop()` when a short-lived program is finished.
 
@@ -81,6 +93,37 @@ const remote = new RemoteClient({
 ```
 
 Use the same protocol constructor on both ends of a connection.
+
+## Browser client
+
+A browser can be the client without using an authentication host. Bundlers such as Vite select PerfectWS's browser export automatically; `perfect-ws/browser` is the explicit browser-only entry:
+
+```typescript
+// browser.ts
+import { PerfectWS } from 'perfect-ws/browser';
+
+const socket = new WebSocket('wss://api.example.com/rpc');
+const client = PerfectWS.client(socket);
+
+await client.router.serverOpen;
+const greeting = await client.router.request('greet', { name: 'Ada' });
+```
+
+Attach that socket to a Node server using the same base or advanced protocol on both sides:
+
+```typescript
+// server.ts
+import { WebSocketServer } from 'ws';
+import { PerfectWS } from 'perfect-ws';
+
+const wss = new WebSocketServer({ port: 8080 });
+const server = PerfectWS.server();
+
+server.router.on('greet', ({ name }) => ({ message: `Hello, ${name}!` }));
+wss.on('connection', socket => server.attachClient(socket));
+```
+
+The Node-only authentication hosts are intentionally absent from the browser entry. Use `PerfectWSAdvanced` on both peers when the browser needs callbacks, custom classes, native containers, transferred `AbortSignal`s, or PureRPC. See [Browser clients](docs/browser.md) for reconnect and security notes.
 
 ### Request timeouts
 
@@ -277,14 +320,13 @@ A property read such as `await remote.items` returns a value snapshot. To mutate
 
 - [Common use cases](docs/common-use-cases.md) - short recipes for everyday tasks
 - [Authentication](docs/authentication.md) - credentials, rate limiting, reconnect options, and reverse connections
+- [Browser clients](docs/browser.md) - connect a native browser WebSocket to a Node server
 - [Middleware and routing](docs/middleware-and-routing.md) - validation, shared middleware, and route groups
 - [Reconnection and streaming](docs/reconnection-and-streaming.md) - continuity during connection loss
 - [Serialization and transforms](docs/serialization-and-transforms.md) - callbacks, binary data, native types, and custom classes
 - [PureRPC](docs/pure-rpc.md) - live remote objects and automatic cleanup
 - [Production and resilience](docs/production-resilience.md) - timeouts, limits, pings, and ACK tuning
 - [API reference](docs/api-reference.md) - core types, signatures, and configuration
-
-For local debugging, pass `debugging: true` to the host and client. This logs the authentication flow and disables the ping loop and ACK system so breakpoints do not close the connection. Do not leave it enabled in production: ACKs are what detect a packet lost at the edge of a disconnect and retry it after reconnection.
 
 ## Upgrading to v2
 

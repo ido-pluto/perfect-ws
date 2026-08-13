@@ -517,7 +517,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
 
                 activeRequest.updateTime = Date.now();
                 try {
-                    options.callback?.(data, error, down);
+                    options.callback?.(data, error ?? null, down === true);
                 } catch (callbackError) {
                     if (this.config.verbose) {
                         console.error('[PerfectWS] Request callback threw:', callbackError);
@@ -651,7 +651,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
             const onOperationSettled = () => settleResolve();
             const onFinished = () => settleResolve();
             const onTimeout = () => settleReject({ message: 'Server not connected', code: 'serverClosed' });
-            let timeout: NodeJS.Timeout;
+            let timeout: ReturnType<typeof setTimeout>;
 
             cleanup = () => {
                 if (timeout) {
@@ -1049,7 +1049,7 @@ export class PerfectWS<WSType extends WSLike = WSLike, ExtraConfig = { [key: str
                     }
                 }
                 const ackReceived = await new Promise<boolean>((resolve, reject) => {
-                    let timeoutId: NodeJS.Timeout | null = null;
+                    let timeoutId: ReturnType<typeof setTimeout> | null = null;
                     let resolved = false;
 
                     const cleanup = () => {

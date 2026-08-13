@@ -9,15 +9,20 @@
   "scripts": {
     "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "pretest": "npm run build",
-    "test": "vitest run",
+    "test": "npm run test:gc:run && npm run test:main",
+    "test:main": "vitest run --exclude tests/rpc-gc.test.ts",
     "build": "npm run clean && tsc --project tsconfig.json && tsc --noEmit -p tsconfig.type-tests.json",
     "build:local": "npm run clean && tsc --project tsconfig.json --sourceMap",
     "prepack": "npm run build",
     "pretest:coverage": "npm run build",
-    "test:coverage": "vitest run --coverage --silent --reporter=dot --testTimeout=30000 --hookTimeout=40000 --maxWorkers=4",
+    "test:coverage": "npm run test:gc:run && vitest run --coverage --silent --reporter=dot --testTimeout=30000 --hookTimeout=40000 --maxWorkers=4 --exclude tests/rpc-gc.test.ts",
+    "pretest:gc": "npm run build",
+    "test:gc": "npm run test:gc:run",
+    "test:gc:run": "vitest run tests/rpc-gc.test.ts --coverage.enabled=false --silent --reporter=dot --maxWorkers=1 --testTimeout=60000 --hookTimeout=60000",
     "generate-coverage-badge": "coverage-badges -s coverage/coverage-summary.json -o coverage/badge.svg",
     "test:ui": "vitest --ui",
-    "test:package": "node tests/fixtures/package-consumer.mjs && publint"
+    "test:package": "node tests/fixtures/package-consumer.mjs && publint",
+    "test:browser": "npm --prefix tests/browser test"
   },
   "keywords": [
     "websocket",
@@ -52,10 +57,20 @@
   ],
   "exports": {
     ".": {
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js",
+        "default": "./dist/browser.js"
+      },
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "node": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js",
+      "default": "./dist/browser.js"
     }
   },
   "dependencies": {

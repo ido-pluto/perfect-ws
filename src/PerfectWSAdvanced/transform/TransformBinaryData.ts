@@ -1,3 +1,4 @@
+import { Binary } from 'bson';
 import { createTransformMarker, transformReceivedDeserializeType, transformSendRecursive } from './utils/changeType.js';
 import { PureValueClone } from './utils/PureValueClone.js';
 import { PerfectWSError } from '../../PerfectWSError.js';
@@ -115,10 +116,15 @@ export class TransformBinaryData {
             }
         }
 
-        if (data?.constructor?.name === 'Binary') {
-            const buf = data.buffer || data;
+        if (data instanceof Binary || data?.constructor?.name === 'Binary') {
+            const buf = data instanceof Binary
+                ? Binary.prototype.value.call(data)
+                : data.buffer || data;
             if (buf instanceof ArrayBuffer) {
                 return new Uint8Array(buf);
+            }
+            if (buf instanceof Uint8Array) {
+                return buf;
             }
             if (TransformBinaryData.HAS_BUFFER) {
                 return new Uint8Array(Buffer.from(buf));

@@ -23,11 +23,19 @@ try {
     cwd: consumer,
     stdio: 'pipe',
   });
+  execFileSync(process.execPath, ['--input-type=module', '--eval', "await import('perfect-ws/browser')"], {
+    cwd: consumer,
+    stdio: 'pipe',
+  });
 
   writeFileSync(join(consumer, 'fixture.ts'), `
 import { PerfectWS, ServerHost, validateWithZod } from 'perfect-ws';
+import * as browserApi from 'perfect-ws/browser';
 import type { PerfectWSRouter, WSRequestOptions } from 'perfect-ws';
 const client = PerfectWS.client();
+const browserClient = browserApi.PerfectWS.client();
+// @ts-expect-error Authentication hosts are intentionally unavailable in the browser entry.
+browserApi.ServerHost;
 const host = new ServerHost({ password: 'secret' });
 const options: WSRequestOptions<string> = {
   callback(data, error, done) {
@@ -46,6 +54,7 @@ child.use(() => undefined).on('/value', () => 1);
 host.router.mount('/api', child);
 host.stop();
 client.unregister();
+browserClient.unregister();
 `);
   writeFileSync(join(consumer, 'tsconfig.json'), JSON.stringify({
     compilerOptions: {

@@ -11,6 +11,7 @@ import {
     clientHost,
     serverHost,
 } from '../src/index.js';
+import * as browserEntry from '../src/browser.js';
 
 describe('public auth and PureRPC exports', () => {
     it('exports every auth class directly and through the documented role namespaces', () => {
@@ -27,6 +28,13 @@ describe('public auth and PureRPC exports', () => {
 
     it('exports TransformInstruction as a runtime base class', () => {
         expect(typeof TransformInstruction).toBe('function');
+    });
+
+    it('keeps the browser entry limited to browser-safe core exports', () => {
+        expect(browserEntry.PerfectWS).toBe(PerfectWS);
+        expect(browserEntry.PerfectWSAdvanced).toBe(PerfectWSAdvanced);
+        expect('ServerHost' in browserEntry).toBe(false);
+        expect('ClientHost' in browserEntry).toBe(false);
     });
 
     it('uses the base protocol by default and requires an explicit advanced constructor', () => {
