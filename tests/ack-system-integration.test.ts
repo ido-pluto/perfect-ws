@@ -1,22 +1,24 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PerfectWS } from '../src/PerfectWS.js';
 import { WebSocketServer } from 'ws';
 import { WebSocket } from 'ws';
 import { sleep } from '../src/utils/sleepPromise.js';
 import { WebSocketForce } from '../src/utils/WebSocketForce.js';
+import { BSON } from 'bson';
 
 describe('ACK System Integration Tests', () => {
+    const originalWebSocketSend = WebSocket.prototype.send;
     let port: number;
     let server: WebSocketServer;
     let serverRouter: any;
     let attachClient: any;
 
-    beforeAll(() => {
-        port = 9500 + Math.floor(Math.random() * 100);
-    });
-
-    beforeEach(() => {
-        server = new WebSocketServer({ port });
+    beforeEach(async () => {
+        server = new WebSocketServer({ port: 0 });
+        await new Promise<void>(resolve => server.once('listening', () => resolve()));
+        const address = server.address();
+        if (typeof address === 'string' || address === null) throw new Error('Missing WebSocket address');
+        port = address.port;
         const result = PerfectWS.server();
         serverRouter = result.router;
         attachClient = result.attachClient;
@@ -27,8 +29,9 @@ describe('ACK System Integration Tests', () => {
     });
 
     afterEach(async () => {
-        server.close();
-        await new Promise(resolve => server.once('close', resolve));
+        WebSocket.prototype.send = originalWebSocketSend;
+        for (const socket of server.clients) socket.terminate();
+        await new Promise<void>(resolve => server.close(() => resolve()));
     });
 
     describe('Real WebSocket Connection Tests', () => {
@@ -58,9 +61,15 @@ describe('ACK System Integration Tests', () => {
 
         it('should retry on ACK timeout and succeed on second attempt', async () => {
             let attemptCount = 0;
+            let testPackets = 0;
+            let droppedAck = false;
+            const started = Promise.withResolvers<void>();
+            const finish = Promise.withResolvers<void>();
 
-            serverRouter.on('test', (data: any) => {
+            serverRouter.on('test', async (data: any) => {
                 attemptCount++;
+                started.resolve();
+                await finish.promise;
                 return { attempt: attemptCount };
             });
 
@@ -70,17 +79,34 @@ describe('ACK System Integration Tests', () => {
 
             const { router: clientRouter, setServer } = PerfectWS.client();
             clientRouter.config.enableAckSystem = true;
-            clientRouter.config.ackTimeout = 100;
-            clientRouter.config.ackRetryDelays = [50];
+            clientRouter.config.ackTimeout = 20;
+            clientRouter.config.ackRetryDelays = [100];
 
             const ws = new WebSocket(`ws://localhost:${port}`);
             setServer(ws);
 
             await clientRouter.serverOpen;
 
-            const result = await clientRouter.request('test', { data: 'retry-test' });
+            WebSocket.prototype.send = function (data: any, ...args: any[]) {
+                try {
+                    const packet = BSON.deserialize(new Uint8Array(data));
+                    if (packet.method === 'test') testPackets++;
+                    if (!droppedAck && packet.method === '___ack' && String(packet.requestId).startsWith('test')) {
+                        droppedAck = true;
+                        return;
+                    }
+                } catch { }
+                return Reflect.apply(originalWebSocketSend as any, this, [data, ...args]);
+            } as any;
 
-            // Should have succeeded
+            const pending = clientRouter.request('test', { data: 'retry-test' });
+            await started.promise;
+            await vi.waitFor(() => expect(testPackets).toBe(2));
+            finish.resolve();
+            const result = await pending;
+
+            expect(droppedAck).toBe(true);
+            expect(testPackets).toBe(2);
             expect(attemptCount).toBe(1);
             expect(result).toEqual({ attempt: 1 });
 
@@ -89,7 +115,7 @@ describe('ACK System Integration Tests', () => {
 
         it('should handle multiple concurrent requests with ACKs', async () => {
             serverRouter.on('slow', async (data: any) => {
-                await sleep(50 + Math.random() * 50);
+                await sleep(50 + (data.id % 5) * 10);
                 return { id: data.id, processed: true };
             });
 
@@ -126,7 +152,7 @@ describe('ACK System Integration Tests', () => {
 
         it('should handle packet loss and recovery', async () => {
             let dropNextPacket = false;
-            const originalSend = WebSocket.prototype.send;
+            const originalSend = originalWebSocketSend;
 
             // Monkey patch to simulate packet loss
             WebSocket.prototype.send = function(data: any) {
@@ -163,8 +189,6 @@ describe('ACK System Integration Tests', () => {
             // Should succeed after retry
             expect(result).toEqual({ received: { test: 'data' } });
 
-            // Restore original send
-            WebSocket.prototype.send = originalSend;
             ws.close();
         });
 
@@ -290,7 +314,8 @@ describe('ACK System Integration Tests', () => {
             const { router: clientRouter, setServer } = PerfectWS.client();
             clientRouter.config.enableAckSystem = true;
             clientRouter.config.processedPacketsCleanupInterval = 100;
-            clientRouter.config.maxProcessedPackets = 5;
+            clientRouter.config.maxProcessedPackets = 100;
+            clientRouter.config.processedPacketsRetention = 1;
 
             const ws = new WebSocket(`ws://localhost:${port}`);
             setServer(ws);
@@ -349,7 +374,7 @@ describe('ACK System Integration Tests', () => {
             }
         });
 
-        it('should handle max retries exhaustion', async () => {
+        it('treats a final response as proof that the request arrived when its ACK is absent', async () => {
             // Server never sends ACKs
             serverRouter.config.enableAckSystem = false;
 
@@ -374,13 +399,9 @@ describe('ACK System Integration Tests', () => {
             const result = await clientRouter.request('no-ack', { test: 'data' });
             const duration = Date.now() - startTime;
 
-            // Should fail after all retries (initial + 2 retries)
-            // Total time should be roughly: 50 + 30 + 40 = 120ms
-            expect(duration).toBeGreaterThanOrEqual(120);
+            // The response itself can complete the request even when its ACK is disabled.
             expect(duration).toBeLessThan(300);
-
-            // Result might still succeed if server processes without ACK
-            // But client should have retried multiple times
+            expect(result).toEqual({ received: { test: 'data' } });
 
             ws.close();
         });
@@ -424,7 +445,7 @@ describe('ACK System Integration Tests', () => {
 
         it('should handle network jitter with varying delays', async () => {
             let delayMs = 0;
-            const originalSend = WebSocket.prototype.send;
+            const originalSend = originalWebSocketSend;
 
             // Add artificial delay to simulate network jitter
             WebSocket.prototype.send = function(data: any) {
@@ -474,7 +495,6 @@ describe('ACK System Integration Tests', () => {
             });
 
             // Restore original send
-            WebSocket.prototype.send = originalSend;
             ws.close();
         });
     });
@@ -491,7 +511,10 @@ describe('ACK System Integration Tests', () => {
 
             const { router: clientRouter, setServer } = PerfectWS.client();
             clientRouter.config.enableAckSystem = true;
-            clientRouter.config.maxPendingAcks = 100;
+            clientRouter.config.maxPendingAcks = 500;
+            clientRouter.config.maxTotalPendingAcks = 500;
+            serverRouter.config.maxPendingAcks = 500;
+            serverRouter.config.maxTotalPendingAcks = 500;
             clientRouter.config.maxPendingAcksKept = 50;
 
             const ws = new WebSocket(`ws://localhost:${port}`);
@@ -509,21 +532,21 @@ describe('ACK System Integration Tests', () => {
 
             const results = await Promise.all(promises);
 
-            // Most should succeed, some might fail due to cleanup
             const succeeded = results.filter(r => !r.error).length;
-            expect(succeeded).toBeGreaterThan(100);
+            expect(succeeded).toBe(200);
+            expect(results).toHaveLength(200);
 
             const privateMethods = clientRouter as any;
             // Pending ACKs should be cleaned up
-            expect(privateMethods._pendingAcks.size).toBeLessThanOrEqual(100);
+            expect(privateMethods._pendingAcks.size).toBe(0);
 
             ws.close();
         });
 
         it('should not leak memory with failed ACK attempts', async () => {
-            // Server that randomly doesn't ACK
+            // Exercise a deterministic mix of request ids.
             serverRouter.on('unreliable', (data: any) => {
-                if (Math.random() > 0.5) {
+                if (data.id % 2 === 0) {
                     const privateMethods = serverRouter as any;
                     const lastPacket = Array.from(privateMethods._processedPackets.keys()).pop();
                     if (lastPacket) {

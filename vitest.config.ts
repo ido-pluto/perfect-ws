@@ -1,21 +1,36 @@
 import { defineConfig } from 'vitest/config';
 
+const isCI = Boolean(process.env.CI);
+
 export default defineConfig({
   test: {
     globals: true,
     setupFiles: ['tests/setupTests.ts'],
-    include: ['tests/**/*.test.ts', 'tests/**/*.spec.ts', 'tests/integration/*.test.ts'],
-    environmentMatchGlobs: [
-      ['tests/integration/**', 'node'],
-      ['**', 'happy-dom']
+    include: ['tests/**/*.test.ts', 'tests/**/*.spec.ts'],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['tests/integration/**/*.test.ts'],
+          exclude: ['tests/*.test.ts', 'tests/*.spec.ts'],
+          environment: 'node',
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'unit',
+          include: ['tests/*.test.ts', 'tests/*.spec.ts'],
+          exclude: ['tests/integration/**'],
+          environment: 'happy-dom',
+        },
+      },
     ],
-    // Suppress unhandled rejection errors for expected test cases
-    dangerouslyIgnoreUnhandledErrors: true,
     reporters: ['default'],
     onConsoleLog: (log) => {
-      // Filter out expected unhandled rejection warnings
       if (log.includes('Server not connected') && log.includes('serverClosed')) {
-        return false; // Don't print this log
+        return false;
       }
     },
     coverage: {
@@ -24,15 +39,21 @@ export default defineConfig({
       all: true,
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.test.ts', 'src/**/*.spec.ts'],
+      thresholds: {
+        statements: 100,
+        branches: 100,
+        functions: 100,
+        lines: 100,
+      },
     },
-    testTimeout: 10_000, // 2 minutes for long integration tests
-    hookTimeout: 20_000,
+    testTimeout: isCI ? 30_000 : 10_000,
+    hookTimeout: isCI ? 40_000 : 20_000,
     pool: 'forks',
     poolOptions: {
       forks: {
-        maxForks: 80,
-        minForks: 50,
-        singleFork: true, // Each test file in its own fork
+        // Real WebSocket tests need some parallelism, but CI runners have fewer cores.
+        maxForks: isCI ? 4 : 8,
+        minForks: 1,
       }
     }
   },

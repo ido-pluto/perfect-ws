@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { serializeWith } from './utils/serializeWith.js';
 import { PerfectWS } from '../src/PerfectWS.ts';
 import { PerfectWSAdvanced } from '../src/PerfectWSAdvanced/PerfectWSAdvanced.ts';
 import { NetworkEventListener } from '../src/utils/NetworkEventListener.ts';
@@ -135,11 +136,12 @@ describe('Coverage Completion Tests', () => {
         clients: new Set(['client1'])
       });
 
+      const socket = {} as any;
       const handler = router['_listenForRequests'].get('___ping');
-      const result = await handler?.callbacks?.[0]?.({}, { ws: 'client1' } as any);
+      const result = await handler?.callbacks?.[0]?.({}, { ws: socket } as any);
 
       expect(result).toBe('pong');
-      expect(router['_lastPingTime']).toBeGreaterThan(0);
+      expect(router['_lastPingTimes'].get(socket)).toBeGreaterThan(0);
     });
 
     it('should handle verbose logging paths', async () => {
@@ -180,7 +182,7 @@ describe('Coverage Completion Tests', () => {
 
       // Test with function that returns undefined
       const undefinedFunc = vi.fn().mockReturnValue(undefined);
-      const serialized = transform.serialize(undefinedFunc);
+      const serialized = serializeWith(transform, undefinedFunc);
 
       const responsePromise = new Promise((resolve) => {
         events.on('___callback.response', (source, data) => {
@@ -212,7 +214,7 @@ describe('Coverage Completion Tests', () => {
         custom: { field: 'value' }
       });
 
-      const serialized = transform.serialize(errorFunc);
+      const serialized = serializeWith(transform, errorFunc);
 
       const responsePromise = new Promise((resolve) => {
         events.on('___callback.response', (source, data) => {
@@ -242,7 +244,7 @@ describe('Coverage Completion Tests', () => {
       });
 
       // Should not throw
-      expect(transform['_activeRequests'].size).toBe(0);
+      expect(transform['_activeRequests']?.size ?? 0).toBe(0);
     });
 
     it('should handle deeply nested callback serialization', () => {
@@ -262,7 +264,7 @@ describe('Coverage Completion Tests', () => {
           }
       };
 
-      const serialized = transform.serialize(deep);
+      const serialized = serializeWith(transform, deep);
 
       // Check that functions up to depth 3 are serialized
       expect(serialized.func1.___type).toBe('callback');
@@ -282,7 +284,7 @@ describe('Coverage Completion Tests', () => {
         () => 'func3'
       ];
 
-      const serialized = transform.serialize(funcs);
+      const serialized = serializeWith(transform, funcs);
 
       expect(Array.isArray(serialized)).toBe(true);
       expect(serialized[0].___type).toBe('callback');
@@ -306,7 +308,7 @@ describe('Coverage Completion Tests', () => {
         }
       };
 
-      const serialized = transform.serialize(mixed);
+      const serialized = serializeWith(transform, mixed);
 
       expect(serialized.str).toBe('string');
       expect(serialized.num).toBe(42);
@@ -328,7 +330,7 @@ describe('Coverage Completion Tests', () => {
         }
       };
 
-      const serialized = transform.serialize(obj.getValue.bind(obj));
+      const serialized = serializeWith(transform, obj.getValue.bind(obj));
 
       const responsePromise = new Promise((resolve) => {
         events.on('___callback.response', (source, data) => {
@@ -354,6 +356,7 @@ describe('Coverage Completion Tests', () => {
       const transform = new TransformCallbacks(events, 10);
 
       const callbackData = {
+        ___perfectWS: 1,
         ___type: 'callback',
         funcId: 'remote-func',
         funcName: 'timeoutFunc'
@@ -403,13 +406,15 @@ describe('Coverage Completion Tests', () => {
 
       const serializedData = {
         func: {
+          ___perfectWS: 1,
           ___type: 'callback',
           funcId: 'test-func',
           funcName: 'testFunc'
         },
         signal: {
+          ___perfectWS: 1,
           ___type: 'abortSignal',
-          signalId: 'test-signal'
+          subscribe: () => { }
         },
         normal: 'data'
       };

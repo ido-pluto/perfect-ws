@@ -98,6 +98,7 @@ describe('PerfectWS Core', () => {
       const { router } = PerfectWS.client();
       const openPromise = router.serverOpen;
       expect(openPromise).toBeInstanceOf(Promise);
+      void openPromise.catch(() => { });
     });
   });
 
@@ -227,7 +228,7 @@ describe('PerfectWS Core', () => {
 
       subRoute.on('subMethod', async () => 'from subroute');
 
-      router.use(subRoute);
+      router.mount('', subRoute);
 
       const hasMethod = (router as any)._listenForRequests.has('subMethod');
       expect(hasMethod).toBe(true);
@@ -241,11 +242,23 @@ describe('PerfectWS Core', () => {
       subRoute1.on('method1', async () => 'result1');
       subRoute2.on('method2', async () => 'result2');
 
-      router.use(subRoute1);
-      router.use(subRoute2);
+      router.mount('', subRoute1);
+      router.mount('', subRoute2);
 
       expect((router as any)._listenForRequests.has('method1')).toBe(true);
       expect((router as any)._listenForRequests.has('method2')).toBe(true);
+    });
+
+    it('applies a prefix passed to mount()', () => {
+      const { router } = PerfectWS.server();
+      const apiRouter = PerfectWS.Router();
+
+      apiRouter.on('/users', async () => 'users');
+
+      router.mount('/api', apiRouter);
+
+      expect((router as any)._listenForRequests.has('/api/users')).toBe(true);
+      expect((router as any)._listenForRequests.has('/users')).toBe(false);
     });
   });
 

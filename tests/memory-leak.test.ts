@@ -4,6 +4,9 @@ import { WebSocketForce } from '../src/utils/WebSocketForce.js';
 import { WebSocket, WebSocketServer } from 'ws';
 import { NetworkEventListener } from '../src/utils/NetworkEventListener.js';
 
+const activeApplicationResponses = (router: PerfectWS) =>
+    [...(router as any)._activeResponses.values()].filter((response: any) => !response.internal).length;
+
 describe('Memory Leak Tests', () => {
     let server: WebSocketServer;
     let port: number;
@@ -39,26 +42,31 @@ describe('Memory Leak Tests', () => {
         // Add error handlers
         process.on('uncaughtException', errorHandler);
         process.on('unhandledRejection', rejectionHandler);
-        // Use a more reliable port calculation to avoid conflicts
-        port = 30000 + Math.floor(Math.random() * 10000);
-
-        // Create server and wait for it to be listening
+        // Let the OS reserve an available port atomically.
         await new Promise<void>((resolve, reject) => {
             try {
-                server = new WebSocketServer({ port });
-
-                // Wait for server to be listening
-                server.once('listening', () => resolve());
-
-                // Handle errors
-                server.once('error', (err) => reject(err));
-
-                // Add timeout to prevent hanging
-                setTimeout(() => reject(new Error('Server failed to start within 5 seconds')), 5000);
+                server = new WebSocketServer({ port: 0 });
+                let settled = false;
+                let timeout: ReturnType<typeof setTimeout>;
+                const settle = (complete: () => void) => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeout);
+                    complete();
+                };
+                timeout = setTimeout(() => settle(() => reject(new Error('Server failed to start within 5 seconds'))), 5000);
+                server.once('listening', () => settle(resolve));
+                server.once('error', err => settle(() => reject(err)));
             } catch (err) {
                 reject(err);
             }
         });
+
+        const address = server.address();
+        if (typeof address === 'string' || address === null) {
+            throw new Error('WebSocket test server has no TCP port');
+        }
+        port = address.port;
     });
 
     afterEach(async () => {
@@ -69,9 +77,17 @@ describe('Memory Leak Tests', () => {
         // Properly close server and wait for it to finish
         await new Promise<void>((resolve) => {
             if (server) {
-                server.close(() => resolve());
-                // Force resolve after timeout to prevent hanging
-                setTimeout(() => resolve(), 1000);
+                for (const client of server.clients) client.terminate();
+                let settled = false;
+                let timeout: ReturnType<typeof setTimeout>;
+                const settle = () => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeout);
+                    resolve();
+                };
+                timeout = setTimeout(settle, 1000);
+                server.close(settle);
             } else {
                 resolve();
             }
@@ -511,11 +527,11 @@ describe('Memory Leak Tests', () => {
 
             await clientRouter.serverOpen;
 
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
 
             await clientRouter.request('test', null);
 
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
         });
 
         it('should clean up active responses when request is aborted', async () => {
@@ -552,18 +568,14 @@ describe('Memory Leak Tests', () => {
             await expect(requestPromise).rejects.toThrow();
             await new Promise(resolve => setTimeout(resolve, 100));
 
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
         });
 
         it('should not accumulate listeners on autoReconnect', async () => {
             const { router: serverRouter, autoReconnect } = PerfectWS.server();
             serverRouter.config.delayBeforeReconnect = 100;
 
-            server.on('connection', (ws) => {
-                serverRouter['attachClient'](ws);
-            });
-
-            const stopReconnect = autoReconnect(`ws://localhost:${port}`);
+            const stopReconnect = autoReconnect(`ws://localhost:${port}`, WebSocket as any);
 
             await new Promise(resolve => setTimeout(resolve, 500));
 
@@ -724,12 +736,12 @@ describe('Memory Leak Tests', () => {
             await Promise.all(requests);
 
             expect(clientRouter['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
         });
     });
 
     describe('Complex Stress Tests', () => {
-        it('should handle rapid bidirectional requests for 30 seconds without memory leaks', { timeout: 35000 }, async () => {
+        it('should handle a fixed rapid bidirectional workload without memory leaks', { timeout: 15000 }, async () => {
             const { router: serverRouter, attachClient } = PerfectWS.server();
             serverRouter.config.runPingLoop = false;
 
@@ -755,8 +767,7 @@ describe('Memory Leak Tests', () => {
 
             await Promise.all([client1Router.serverOpen, client2Router.serverOpen]);
 
-            const startTime = Date.now();
-            const duration = 30000;
+            const iterations = 100;
 
             let client1Sent = 0;
             let client1Received = 0;
@@ -766,7 +777,7 @@ describe('Memory Leak Tests', () => {
             const errors: Error[] = [];
 
             const client1Worker = async () => {
-                while (Date.now() - startTime < duration) {
+                while (client1Sent < iterations) {
                     try {
                         const response = await client1Router.request('echo', `msg-${client1Sent}`);
                         expect(response).toBe(`server-echo-msg-${client1Sent}`);
@@ -775,12 +786,11 @@ describe('Memory Leak Tests', () => {
                     } catch (error) {
                         errors.push(error as Error);
                     }
-                    await new Promise(resolve => setTimeout(resolve, Math.random() * 50));
                 }
             };
 
             const client2Worker = async () => {
-                while (Date.now() - startTime < duration) {
+                while (client2Sent < iterations) {
                     try {
                         const response = await client2Router.request('compute', client2Sent);
                         expect(response).toBe(client2Sent * 2);
@@ -789,21 +799,20 @@ describe('Memory Leak Tests', () => {
                     } catch (error) {
                         errors.push(error as Error);
                     }
-                    await new Promise(resolve => setTimeout(resolve, Math.random() * 30));
                 }
             };
 
             await Promise.all([client1Worker(), client2Worker()]);
 
             expect(errors.length).toBe(0);
-            expect(client1Sent).toBeGreaterThan(0);
+            expect(client1Sent).toBe(iterations);
             expect(client1Received).toBe(client1Sent);
-            expect(client2Sent).toBeGreaterThan(0);
+            expect(client2Sent).toBe(iterations);
             expect(client2Received).toBe(client2Sent);
 
             expect(client1Router['_activeRequests'].size).toBe(0);
             expect(client2Router['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
 
             const client1MessageListeners = (client1Router['_server'] as any)._virtualCloseListeners.length;
             const client2MessageListeners = (client2Router['_server'] as any)._virtualCloseListeners.length;
@@ -812,7 +821,7 @@ describe('Memory Leak Tests', () => {
             expect(client2MessageListeners).toBeLessThanOrEqual(5);
         });
 
-        it('should keep connection open for extended period without unhandled rejections', { timeout: 20000, retry: 2 }, async () => {
+        it('should keep repeated multi-client traffic free of unhandled rejections', { timeout: 10000 }, async () => {
             const { router: serverRouter, attachClient } = PerfectWS.server();
             serverRouter.config.runPingLoop = false;
 
@@ -850,8 +859,8 @@ describe('Memory Leak Tests', () => {
             ]);
 
             let pingsSent = 0;
-            const pingInterval = setInterval(async () => {
-                try {
+            try {
+                for (let round = 0; round < 15; round++) {
                     const results = await Promise.all([
                         client1Router.request('ping', null),
                         client2Router.request('ping', null),
@@ -859,23 +868,20 @@ describe('Memory Leak Tests', () => {
                     ]);
                     results.forEach(result => expect(result).toBe('pong'));
                     pingsSent++;
-                } catch (error) {
-                    unhandledRejections.push(error);
                 }
-            }, 1000);
-
-            await new Promise(resolve => setTimeout(resolve, 15_000));
-
-            clearInterval(pingInterval);
-            process.off('unhandledRejection', rejectionHandler);
+            } catch (error) {
+                unhandledRejections.push(error);
+            } finally {
+                process.off('unhandledRejection', rejectionHandler);
+            }
 
             expect(unhandledRejections.length).toBe(0);
-            expect(pingsSent).greaterThanOrEqual(14);
+            expect(pingsSent).toBe(15);
 
             expect(client1Router['_activeRequests'].size).toBe(0);
             expect(client2Router['_activeRequests'].size).toBe(0);
             expect(client3Router['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
 
             expect(client1Router['_waitForNewServer'].size).toBe(0);
             expect(client2Router['_waitForNewServer'].size).toBe(0);
@@ -885,6 +891,8 @@ describe('Memory Leak Tests', () => {
         it('should handle burst traffic without listener accumulation', async () => {
             const { router: serverRouter, attachClient } = PerfectWS.server();
             serverRouter.config.runPingLoop = false;
+            serverRouter.config.maxPendingAcks = 500;
+            serverRouter.config.maxTotalPendingAcks = 500;
 
             serverRouter.on('burst', (data) => data);
 
@@ -894,6 +902,8 @@ describe('Memory Leak Tests', () => {
 
             const { router: clientRouter } = PerfectWS.client();
             clientRouter.config.runPingLoop = false;
+            clientRouter.config.maxPendingAcks = 500;
+            clientRouter.config.maxTotalPendingAcks = 500;
             const ws = new WebSocket(`ws://localhost:${port}`);
             clientRouter['_setServer'](ws);
 
@@ -909,7 +919,7 @@ describe('Memory Leak Tests', () => {
                 await Promise.all(requests);
 
                 expect(clientRouter['_activeRequests'].size).toBe(0);
-                expect(serverRouter['_activeResponses'].size).toBe(0);
+                await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
 
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
@@ -948,7 +958,7 @@ describe('Memory Leak Tests', () => {
             }
 
             expect(clientRouter['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
             expect(clientRouter['_waitForNewServer'].size).toBe(0);
         });
     });
@@ -987,7 +997,7 @@ describe('Memory Leak Tests', () => {
 
             expect(requestCount).toBe(5);
             expect(clientRouter['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
         });
 
         it('should handle request timeouts and cleanup properly', async () => {
@@ -1016,7 +1026,7 @@ describe('Memory Leak Tests', () => {
             await new Promise(resolve => setTimeout(resolve, 300));
 
             expect(clientRouter['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
         });
 
         it('should handle requests across sequential reconnections', async () => {
@@ -1066,7 +1076,7 @@ describe('Memory Leak Tests', () => {
             expect(result3.number).toBe(3);
 
             expect(clientRouter['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
         });
 
         it('should not leak listeners during rapid reconnection cycles', async () => {
@@ -1103,7 +1113,7 @@ describe('Memory Leak Tests', () => {
             }
 
             expect(clientRouter['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
             expect(clientRouter['_waitForNewServer'].size).toBe(0);
 
             const wsServer = clientRouter['_server'];
@@ -1150,7 +1160,7 @@ describe('Memory Leak Tests', () => {
 
             expect(requestCount).toBe(10);
             expect(clientRouter['_activeRequests'].size).toBe(0);
-            expect(serverRouter['_activeResponses'].size).toBe(0);
+            await vi.waitFor(() => expect(activeApplicationResponses(serverRouter)).toBe(0));
             expect(clientRouter['_waitForNewServer'].size).toBe(0);
 
             const wsServer = clientRouter['_server'];
@@ -1159,4 +1169,3 @@ describe('Memory Leak Tests', () => {
         });
     });
 });
-

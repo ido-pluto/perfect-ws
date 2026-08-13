@@ -9,16 +9,19 @@ describe('Data Streaming and Transformation Integration Tests', () => {
   let serverPort: number;
 
   beforeEach(async () => {
-    serverPort = 9080 + Math.floor(Math.random() * 1000);
-    wss = new WebSocketServer({ port: serverPort });
+    wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      wss.once('listening', resolve);
+      wss.once('error', reject);
+    });
+    const address = wss.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing WebSocket address');
+    serverPort = address.port;
   });
 
   afterEach(async () => {
-    // Give pending operations time to complete before cleanup
-    await sleep(100);
-    wss.close()
-    // Additional delay for cleanup to propagate
-    await sleep(50);
+    for (const socket of wss.clients) socket.terminate();
+    await new Promise<void>(resolve => wss.close(() => resolve()));
   });
 
   it('should handle complex nested function transformations across network', async () => {
@@ -229,10 +232,10 @@ describe('Data Streaming and Transformation Integration Tests', () => {
 
     const points = Array.from({ length: 20 }, (_, i) =>
       new DataPoint(
-        Math.random() * 100,
+        i * 5,
         {
           source: `sensor-${i}`,
-          quality: Math.random()
+          quality: i / 20
         }
       )
     );
@@ -307,7 +310,7 @@ describe('Data Streaming and Transformation Integration Tests', () => {
       const processingInterval = setInterval(() => {
         events.emit('server.heartbeat', {
           timestamp: Date.now(),
-          load: Math.random(),
+          load: 0.5,
           activeOperations: serverState.operations.length
         });
       }, 500);
@@ -376,7 +379,7 @@ describe('Data Streaming and Transformation Integration Tests', () => {
     );
 
     // Simulate client operations
-    const clientId = 'client-' + Math.random().toString(36).substr(2, 9);
+    const clientId = 'client-integration';
 
     for (let i = 0; i < 20; i++) {
       events.emit('client.operation', {
@@ -612,7 +615,7 @@ describe('Data Streaming and Transformation Integration Tests', () => {
         data: {
           id: `obj-${i}`,
           nested: {
-            value: Math.random(),
+            value: i / 10,
             array: Array(10).fill(i)
           }
         }
@@ -791,7 +794,7 @@ describe('Data Streaming and Transformation Integration Tests', () => {
     // Create test data
     const items = Array.from({ length: 100 }, (_, i) => ({
       id: i,
-      value: Math.random() * 100
+      value: (i * 37) % 100
     }));
 
     // Define workers with different processing strategies
@@ -924,7 +927,7 @@ describe('Data Streaming and Transformation Integration Tests', () => {
       input: {
         raw: Array.from({ length: 1000 }, (_, i) => ({
           id: i,
-          value: Math.random() * 100,
+          value: (i * 37) % 100,
           timestamp: Date.now() + i * 1000
         }))
       },
@@ -1117,7 +1120,7 @@ describe('Data Streaming and Transformation Integration Tests', () => {
         });
 
         // Simulate variable processing speed
-        processingTime = 5 + Math.random() * 20;
+        processingTime = 5 + (packet.sequence % 5) * 4;
       }
     }, processingTime);
 

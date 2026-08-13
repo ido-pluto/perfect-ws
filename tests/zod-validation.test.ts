@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PerfectWS } from '../src/PerfectWS';
 import { validateWithZod } from '../src/middleware/zodValidation';
+import { z as realZod } from 'zod';
 
 const z = {
     object: (shape: any) => ({
@@ -144,6 +145,72 @@ describe('🔍 Zod Validation Middleware', () => {
     });
 
     describe('validateWithZod', () => {
+        it('passes the actual parsed Zod output to the following handler', async () => {
+            const schema = realZod.object({
+                name: realZod.string().transform(value => value.trim()),
+                count: realZod.coerce.number().int(),
+            });
+
+            server.on('parseUser',
+                validateWithZod(schema),
+                data => ({
+                    name: data.name,
+                    count: data.count,
+                    countType: typeof data.count,
+                    extra: (data as typeof data & { extra?: string; }).extra,
+                })
+            );
+
+            await expect(client.request('parseUser', {
+                name: '  Ada  ',
+                count: '7',
+                extra: 'preserved',
+            })).resolves.toEqual({
+                name: 'Ada',
+                count: 7,
+                countType: 'number',
+                extra: 'preserved',
+            });
+        });
+
+        it('can replace object input with a primitive transformed output', async () => {
+            const schema = realZod.object({ value: realZod.coerce.number() })
+                .transform(({ value }) => value * 2);
+
+            server.on('parsePrimitive',
+                validateWithZod(schema),
+                data => ({ value: data, type: typeof data })
+            );
+
+            await expect(client.request('parsePrimitive', { value: '21' })).resolves.toEqual({
+                value: 42,
+                type: 'number',
+            });
+        });
+
+        it('forwards falsy parsed output values', async () => {
+            const schema = realZod.string().transform(() => false as const);
+
+            server.on('parseFalsy',
+                validateWithZod(schema, { stripUnknown: true }),
+                data => data
+            );
+
+            await expect(client.request('parseFalsy', 'anything')).resolves.toBe(false);
+        });
+
+        it('accepts parsed records with a null prototype', async () => {
+            const parsed = Object.assign(Object.create(null), { name: 'Ada' });
+            const schema = { safeParse: () => ({ success: true as const, data: parsed }) };
+
+            server.on('parseNullPrototype',
+                validateWithZod(schema),
+                data => data.name
+            );
+
+            await expect(client.request('parseNullPrototype', { name: 'input' })).resolves.toBe('Ada');
+        });
+
         it('should pass valid data', async () => {
             const schema = z.object({
                 name: z.string().min(2),
@@ -421,7 +488,79 @@ describe('🔍 Zod Validation Middleware', () => {
         });
     });
 
+    describe('stripUnknown prototype pollution guard', () => {
+        afterEach(() => {
+            // Defensive: if the guard ever regresses, don't let pollution leak into
+            // other tests running in the same process.
+            delete (Object.prototype as any).polluted;
+            delete (Object.prototype as any).polluted2;
+        });
+
+        it('does not let a __proto__ own-key in the parsed data repoint the prototype', async () => {
+            // JSON.parse (unlike an object literal) creates a literal own property
+            // named "__proto__" instead of setting the prototype - this is exactly the
+            // shape an attacker-controlled request payload would take.
+            const maliciousParsedData = JSON.parse('{"name":"safe","__proto__":{"polluted":true}}');
+            expect(Object.prototype.hasOwnProperty.call(maliciousParsedData, '__proto__')).toBe(true);
+
+            const schema = { safeParse: () => ({ success: true, data: maliciousParsedData }) };
+
+            let capturedData: any;
+            server.on('createUser',
+                validateWithZod(schema as any, { stripUnknown: true }),
+                async (data) => {
+                    capturedData = data;
+                    return { success: true };
+                }
+            );
+
+            await client.request('createUser', { name: 'safe', extra: 'field' });
+
+            expect(capturedData.name).toBe('safe');
+            expect(Object.getPrototypeOf(capturedData)).toBe(Object.prototype);
+            expect(({} as any).polluted).toBeUndefined();
+            expect((Object.prototype as any).polluted).toBeUndefined();
+        });
+
+        it('does not copy constructor/prototype keys from the parsed data', async () => {
+            const maliciousParsedData = JSON.parse('{"name":"safe","constructor":{"prototype":{"polluted2":true}}}');
+
+            const schema = { safeParse: () => ({ success: true, data: maliciousParsedData }) };
+
+            let capturedData: any;
+            server.on('anotherRoute',
+                validateWithZod(schema as any, { stripUnknown: true }),
+                async (data) => {
+                    capturedData = data;
+                    return { success: true };
+                }
+            );
+
+            await client.request('anotherRoute', {});
+
+            expect(capturedData.name).toBe('safe');
+            // "constructor" was skipped by the guard, so the real Object constructor
+            // (inherited, not an own property) is all that's left on the target.
+            expect(Object.prototype.hasOwnProperty.call(capturedData, 'constructor')).toBe(false);
+            expect(capturedData.constructor).toBe(Object);
+            expect(({} as any).polluted2).toBeUndefined();
+        });
+    });
+
     describe('Integration with SubRoutes', () => {
+        it('passes parsed output through a connected PerfectWS sub-route', async () => {
+            const route = PerfectWS.Router();
+            const schema = realZod.object({ count: realZod.coerce.number() });
+
+            route.on('/double',
+                validateWithZod(schema),
+                data => data.count * 2
+            );
+            server.mount('/api', route);
+
+            await expect(client.request('/api/double', { count: '6' })).resolves.toBe(12);
+        });
+
         it('should work with global middleware and validation', async () => {
             const schema = z.object({
                 name: z.string(),
@@ -541,4 +680,3 @@ describe('🔍 Zod Validation Middleware', () => {
         });
     });
 });
-
