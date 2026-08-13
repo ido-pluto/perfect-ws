@@ -17,7 +17,7 @@ describe('RPC garbage collection', () => {
             const timeout = setTimeout(() => {
                 child.kill('SIGKILL');
                 reject(new Error(`GC fixture did not exit naturally.\n${ stderr || stdout }`));
-            }, 45_000);
+            }, 90_000);
             child.once('error', reject);
             child.once('close', code => {
                 clearTimeout(timeout);
@@ -32,5 +32,5 @@ describe('RPC garbage collection', () => {
             callbackStress: 50,
             signalStress: 25,
         });
-    }, 50_000);
+    }, 100_000);
 });

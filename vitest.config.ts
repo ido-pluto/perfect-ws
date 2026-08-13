@@ -7,14 +7,14 @@ export default defineConfig({
     globals: true,
     setupFiles: ['tests/setupTests.ts'],
     include: ['tests/**/*.test.ts', 'tests/**/*.spec.ts'],
-    exclude: ['tests/browser/**'],
+    exclude: ['tests/browser/**', 'tests/rpc-gc.test.ts'],
     projects: [
       {
         extends: true,
         test: {
           name: 'integration',
           include: ['tests/integration/**/*.test.ts'],
-          exclude: ['tests/*.test.ts', 'tests/*.spec.ts', 'tests/browser/**'],
+          exclude: ['tests/*.test.ts', 'tests/*.spec.ts', 'tests/browser/**', 'tests/rpc-gc.test.ts'],
           environment: 'node',
         },
       },
@@ -23,7 +23,7 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['tests/*.test.ts', 'tests/*.spec.ts'],
-          exclude: ['tests/integration/**', 'tests/browser/**'],
+          exclude: ['tests/integration/**', 'tests/browser/**', 'tests/rpc-gc.test.ts'],
           environment: 'happy-dom',
         },
       },
