@@ -11,9 +11,9 @@
 
 </div>
 
-RPC over WebSockets for TypeScript and JavaScript. Register a handler on one side, call it from the other, and receive the result as a promise.
+> RPC over WebSockets for TypeScript and JavaScript. Register a handler on one side, call it from the other side.
 
-PerfectWS includes password authentication, automatic reconnection, request timeouts, and streaming responses. Auth connections use the BSON-only `PerfectWS` protocol by default; advanced serialization for functions, binary/native types, circular objects, and PureRPC is an explicit opt-in.
+PerfectWS includes password authentication, automatic reconnection, request timeouts, and streaming responses.
 
 ## Install
 
@@ -66,64 +66,19 @@ const result = await remote.router.request('greet', { name: 'Ada' });
 console.log(result.message); // Hello, Ada!
 ```
 
-### Debugging without false reconnects
+#### Debugging without false reconnects
 
-Keep `debugging: true` while stepping through local code. A breakpoint pauses the JavaScript event loop, so normal ping and ACK deadlines can otherwise mistake the pause for a dead connection, close the socket, and start reconnecting while you debug. Debugging mode disables those liveness checks and logs the authentication flow.
+`debugging: true` prevents false connection loss during breakpoints. It also logs the handshake and RPC flow, including request IDs, route names, and errors.
 
-The example enables it whenever `NODE_ENV` is not `production`. Never enable it in production: disabling pings and ACKs also disables important dead-connection detection and packet-delivery recovery. Pass the flag on both peers. For a Vite browser client, the equivalent is `PerfectWS.client(socket, { debugging: import.meta.env.DEV })`.
-
-Requests wait for the connection by default, so they can be made immediately after `remote.start()`. Call `remote.stop()` and `host.stop()` when a short-lived program is finished.
-
-`ServerHost`, `ClientHost`, `RemoteClient`, and `RemoteServer` deliberately default to base `PerfectWS`. This keeps the default serialization surface limited to BSON-compatible values. To pass functions, preserve advanced native types, use custom transforms, or enable PureRPC, explicitly select `PerfectWSAdvanced` on both peers:
-
-```typescript
-import { PerfectWSAdvanced, RemoteClient, ServerHost } from 'perfect-ws';
-
-const host = new ServerHost({
-  password: 'shared-secret',
-  port: 8080,
-  perfectWSConstructor: PerfectWSAdvanced,
-});
-
-const remote = new RemoteClient({
-  password: 'shared-secret',
-  url: 'ws://localhost:8080',
-  perfectWSConstructor: PerfectWSAdvanced,
-});
-```
-
-Use the same protocol constructor on both ends of a connection.
 
 ## Browser client
 
-A browser can be the client without using an authentication host. Bundlers such as Vite select PerfectWS's browser export automatically; `perfect-ws/browser` is the explicit browser-only entry:
+A browser can be the client as well. See [Browser clients](docs/browser.md) for details.
 
 ```typescript
 // browser.ts
-import { PerfectWS } from 'perfect-ws/browser';
-
-const socket = new WebSocket('wss://api.example.com/rpc');
-const client = PerfectWS.client(socket);
-
-await client.router.serverOpen;
-const greeting = await client.router.request('greet', { name: 'Ada' });
+import { RemoteClient } from 'perfect-ws/browser';
 ```
-
-Attach that socket to a Node server using the same base or advanced protocol on both sides:
-
-```typescript
-// server.ts
-import { WebSocketServer } from 'ws';
-import { PerfectWS } from 'perfect-ws';
-
-const wss = new WebSocketServer({ port: 8080 });
-const server = PerfectWS.server();
-
-server.router.on('greet', ({ name }) => ({ message: `Hello, ${name}!` }));
-wss.on('connection', socket => server.attachClient(socket));
-```
-
-The Node-only authentication hosts are intentionally absent from the browser entry. Use `PerfectWSAdvanced` on both peers when the browser needs callbacks, custom classes, native containers, transferred `AbortSignal`s, or PureRPC. See [Browser clients](docs/browser.md) for reconnect and security notes.
 
 ### Request timeouts
 
@@ -134,25 +89,13 @@ const result = await remote.router.request('report.create', input, {
   timeout: 30 * 60_000, // 30 minutes
 });
 
-await remote.router.request('worker.watch', null, { timeout: Infinity });
+await remote.router.request('worker.watch', null, { 
+  timeout: Infinity
+  callback: (update, error, done) => {
+    if (!error && !done) console.log(`Progress: ${update.progress}%`);
+  }
+});
 ```
-
-Change `remote.router.config.requestTimeout` to set a different default. Once a request returns its final response, this timer is finished. Returned callbacks, signals, and PureRPC handles have no idle timeout; they remain live until released by garbage collection, explicit disposal, router shutdown, or reconnection synchronization with a peer that no longer knows the request.
-
-## Common use cases
-
-Most applications only need these patterns:
-
-| You need to | Use |
-|---|---|
-| Return one result | Return a value from the handler |
-| Report progress | Call `send(update, false)` before returning |
-| Let the server call the client | Opt into `PerfectWSAdvanced`, then pass a function |
-| Cancel work | Pass an `AbortSignal` in the request options |
-| Work with live remote state | Opt into `PerfectWSAdvanced`, then return `PureRPC` |
-| Group related methods | Create `PerfectWS.Router()` and attach it with `mount(prefix, router)` |
-
-Base `PerfectWS` handles BSON-compatible objects and arrays by value. With `PerfectWSAdvanced` explicitly selected on both peers, `Map`s and `Set`s are preserved, functions and transferred `AbortSignal`s stay live, and `PureRPC` can keep an object on its owner for remote operations.
 
 ### Async work and errors
 
@@ -210,7 +153,17 @@ const report = await remote.router.request('report.create', null, {
 console.log(report.url);
 ```
 
-### Passing or returning a function
+## PerfectWSAdvanced
+An advance serialization protocol for more RPC features:
+- Callbacks,
+- Map, Set, URL, Binary data, errors, and native types,
+- Symbols
+- AbortSignal
+- Circular objects
+- Getters and setters
+
+
+#### Passing or returning a function
 
 With `PerfectWSAdvanced` selected on both peers, functions are serialized as RPC callbacks:
 
@@ -244,14 +197,21 @@ PerfectWS keeps the callback usable while your code can still reach it and relea
 
 See [Common use cases](docs/common-use-cases.md) for cancellation, binary data, middleware, and route groups.
 
+### Routing and middleware
+
 For route groups, `use()` adds middleware and `mount()` attaches a child router:
 
 ```typescript
 import { PerfectWS } from 'perfect-ws';
 
 const accounts = PerfectWS.Router();
-accounts.use(requireUser);
+accounts.use(async (data,{ ws }) => {
+  if (!ws.user) throw new Error('Not authenticated');
+});
+
 accounts.on('/get', data => data.user);
+
+
 host.router.mount('/accounts', accounts);
 ```
 
@@ -268,6 +228,8 @@ class Counter extends PureRPC {
   increment() { return ++this.count; }
 }
 
+const globalCounter = new Counter();
+
 const host = new ServerHost({
   port: 8080,
   password: 'shared-secret',
@@ -275,7 +237,7 @@ const host = new ServerHost({
   fullTrustedRPC: true,
 });
 
-host.router.on('counter', () => new Counter());
+host.router.on('counter', () => globalCounter);
 host.start();
 ```
 
