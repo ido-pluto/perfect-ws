@@ -30,9 +30,11 @@ describe('public auth and PureRPC exports', () => {
         expect(typeof TransformInstruction).toBe('function');
     });
 
-    it('keeps the browser entry limited to browser-safe core exports', () => {
+    it('keeps the browser entry limited to browser-safe exports', () => {
         expect(browserEntry.PerfectWS).toBe(PerfectWS);
         expect(browserEntry.PerfectWSAdvanced).toBe(PerfectWSAdvanced);
+        expect(browserEntry.RemoteClient).toBe(RemoteClient);
+        expect(browserEntry.RemoteServer).toBe(RemoteServer);
         expect('ServerHost' in browserEntry).toBe(false);
         expect('ClientHost' in browserEntry).toBe(false);
     });

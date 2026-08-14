@@ -1,18 +1,20 @@
 # Browser clients
 
-Browser clients use the core protocol directly. `ServerHost`, `ClientHost`, `RemoteClient`, and `RemoteServer` are Node-only because they create HTTP/WebSocket servers and manage password handshakes.
+Browser clients can use the browser-safe `RemoteClient` and `RemoteServer` authentication wrappers. `ServerHost` and `ClientHost` remain Node-only because they create HTTP/WebSocket servers. This lets a browser use the same built-in password handshake as a Node client without copying private handshake routes.
 
 ## Connect
 
 Use the explicit browser entry when you want to guarantee that Node-only hosts cannot enter the bundle:
 
 ```typescript
-import { PerfectWS } from 'perfect-ws/browser';
+import { RemoteClient } from 'perfect-ws/browser';
 
-const socket = new WebSocket('wss://api.example.com/rpc');
-const connection = PerfectWS.client(socket, {
-  clientId: crypto.randomUUID(),
+const connection = new RemoteClient({
+  password: 'shared-secret',
+  id: crypto.randomUUID(),
+  url: 'wss://api.example.com/rpc'
 });
+connection.start();
 
 await connection.router.serverOpen;
 const result = await connection.router.request('profile.get', { id: '42' });
@@ -23,14 +25,11 @@ Vite and other condition-aware bundlers also resolve `import { PerfectWS } from 
 On Node, attach each accepted socket to a server router:
 
 ```typescript
-import { WebSocketServer } from 'ws';
-import { PerfectWS } from 'perfect-ws';
+import { ServerHost } from 'perfect-ws';
 
-const wss = new WebSocketServer({ port: 8080 });
-const server = PerfectWS.server();
-
-server.router.on('profile.get', ({ id }) => loadProfile(id));
-wss.on('connection', socket => server.attachClient(socket));
+const host = new ServerHost({ password: 'shared-secret', port: 8080 });
+host.router.on('profile.get', ({ id }) => loadProfile(id));
+host.start();
 ```
 
 ## Advanced RPC
@@ -38,10 +37,16 @@ wss.on('connection', socket => server.attachClient(socket));
 Select `PerfectWSAdvanced` on both sides for callbacks, `Map`/`Set`, typed arrays, custom transforms, transferred signals, and PureRPC. Enable `fullTrustedRPC` only when both peers are trusted:
 
 ```typescript
-import { PerfectWSAdvanced } from 'perfect-ws/browser';
+import { PerfectWSAdvanced, RemoteClient } from 'perfect-ws/browser';
 
-const connection = PerfectWSAdvanced.client(new WebSocket(url));
-connection.router.config.fullTrustedRPC = true;
+const connection = new RemoteClient({
+  password: 'shared-secret',
+  id: crypto.randomUUID(),
+  url,
+  perfectWSConstructor: PerfectWSAdvanced,
+  fullTrustedRPC: true,
+});
+connection.start();
 await connection.router.serverOpen;
 ```
 
@@ -50,13 +55,20 @@ Node `Buffer` values arrive in the browser as `Uint8Array`, because browsers do 
 
 ## Reconnect
 
-Keep the same client result and replace only its WebSocket:
+Keep the same auth wrapper and let it replace the underlying WebSocket automatically:
 
 ```typescript
-connection.setServer(new WebSocket(url));
+// `autoReconnect` is enabled by default. Keep this same instance and id.
+const connection = new RemoteClient({
+  password: 'shared-secret',
+  id: crypto.randomUUID(),
+  url,
+  autoReconnect: true,
+});
+connection.start();
 await connection.router.serverOpen;
 ```
 
-The same in-memory router and `clientId` let active requests and live RPC values synchronize. Creating a new router with the same id does not restore the old router's resources.
+The same in-memory router and `id` let active requests and live RPC values synchronize after a network drop. Creating a new wrapper/router with the same id does not restore the old router's resources.
 
-Authenticate and authorize the WebSocket before calling `server.attachClient`. Native browser WebSockets cannot set arbitrary handshake headers, so common choices are secure cookies, a short-lived token in the URL or subprotocol, or an authenticated upgrade handled by your web framework. Always use `wss://` outside a trusted local environment.
+The browser-safe auth wrappers use the normal WebSocket constructor and do not require private protocol code in the application. Always use `wss://` outside a trusted local environment. `ServerHost`/`ClientHost` are the matching Node-side hosts; `RemoteClient`/`RemoteServer` are the dial-in wrappers.

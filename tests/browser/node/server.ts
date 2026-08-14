@@ -1,5 +1,5 @@
-import { WebSocketServer } from 'ws';
-import { PerfectWS, PerfectWSAdvanced, PureRPC } from 'perfect-ws';
+import { createServer } from 'node:net';
+import { PerfectWS, PerfectWSAdvanced, PureRPC, ServerHost } from 'perfect-ws';
 import { MoneyTransform } from '../shared/Money.js';
 
 class Counter extends PureRPC {
@@ -17,9 +17,27 @@ class Counter extends PureRPC {
 }
 
 export async function startAcceptanceServer() {
-  const base = PerfectWS.server();
-  const advanced = PerfectWSAdvanced.server();
-  const wss = new WebSocketServer({ port: 0 });
+  const password = 'browser-acceptance-secret';
+  const [basePort, advancedPort] = await getAvailablePorts(2);
+  const base = new ServerHost({
+    id: 'browser-base-server',
+    password,
+    perfectWSConstructor: PerfectWS,
+    port: basePort,
+    host: '127.0.0.1',
+    debugging: true,
+  });
+  const advanced = new ServerHost({
+    id: 'browser-advanced-server',
+    password,
+    perfectWSConstructor: PerfectWSAdvanced,
+    fullTrustedRPC: true,
+    port: advancedPort,
+    host: '127.0.0.1',
+    debugging: true,
+  });
+  base.start();
+  advanced.start();
   let lastRequestAbort: unknown;
 
   for (const router of [base.router, advanced.router]) {
@@ -56,6 +74,10 @@ export async function startAcceptanceServer() {
     return { aborted: true };
   });
   base.router.on('/abort-status', () => ({ reason: lastRequestAbort }));
+  base.router.on('/drop-connection', (_data, { ws }) => {
+    setTimeout(() => ws.forceClose(4000, 'browser reconnect test'), 10);
+    return { dropping: true };
+  });
 
   advanced.router.on('/complex', async (data: any) => {
     const bytes = data.values.get('bytes');
@@ -84,30 +106,39 @@ export async function startAcceptanceServer() {
     }
     return { same, reason: data.first.reason };
   });
-
-  wss.on('connection', (socket, request) => {
-    const path = new URL(request.url ?? '/', 'http://localhost').pathname;
-    if (path === '/base') base.attachClient(socket);
-    else if (path === '/advanced') advanced.attachClient(socket);
-    else socket.close(1008, 'Unknown PerfectWS test endpoint');
+  advanced.router.on('/drop-connection', (_data, { ws }) => {
+    setTimeout(() => ws.forceClose(4000, 'browser reconnect test'), 10);
+    return { dropping: true };
   });
-
-  await new Promise<void>((resolve, reject) => {
-    wss.once('listening', resolve);
-    wss.once('error', reject);
-  });
-  const address = wss.address();
-  if (!address || typeof address === 'string') throw new Error('Browser acceptance server has no TCP port');
 
   return {
-    port: address.port,
+    basePort,
+    advancedPort,
     async close() {
-      base.unregister();
-      advanced.unregister();
-      for (const socket of wss.clients) socket.terminate();
-      await new Promise<void>((resolve, reject) => {
-        wss.close(error => error ? reject(error) : resolve());
-      });
+      base.stop();
+      advanced.stop();
     },
   };
+}
+
+async function getAvailablePorts(count: number) {
+  const reservations = Array.from({ length: count }, () => createServer());
+  try {
+    return await Promise.all(reservations.map(server => new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address();
+        if (!address || typeof address === 'string') {
+          reject(new Error('Unable to allocate a browser acceptance port'));
+          return;
+        }
+        resolve(address.port);
+      });
+    })));
+  } finally {
+    await Promise.all(reservations.map(server => new Promise<void>(resolve => {
+      if (!server.listening) return resolve();
+      server.close(() => resolve());
+    })));
+  }
 }

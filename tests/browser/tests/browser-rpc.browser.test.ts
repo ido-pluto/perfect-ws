@@ -3,20 +3,37 @@ import * as conditionalEntry from 'perfect-ws';
 import * as browserEntry from 'perfect-ws/browser';
 import { Money, MoneyTransform } from '../shared/Money.js';
 
-type ClientResult = ReturnType<typeof browserEntry.PerfectWS.client<WebSocket>>;
+type ClientResult = InstanceType<typeof browserEntry.RemoteClient>;
 
 const clients: ClientResult[] = [];
-const sockets: WebSocket[] = [];
 
 function url(path: 'base' | 'advanced') {
-  return `ws://127.0.0.1:${inject('rpcPort')}/${path}`;
+  const port = path === 'base' ? inject('basePort') : inject('advancedPort');
+  return `ws://127.0.0.1:${port}`;
 }
 
 function openClient(advanced = false, clientId = crypto.randomUUID()) {
-  const socket = new WebSocket(url(advanced ? 'advanced' : 'base'));
   const result = advanced
-    ? browserEntry.PerfectWSAdvanced.client<WebSocket>(socket, { clientId })
-    : browserEntry.PerfectWS.client<WebSocket>(socket, { clientId });
+    ? new browserEntry.RemoteClient({
+      password: 'browser-acceptance-secret',
+      id: clientId,
+      url: url('advanced'),
+      webSocketConstructor: WebSocket,
+      perfectWSConstructor: browserEntry.PerfectWSAdvanced,
+      fullTrustedRPC: true,
+      debugging: true,
+      delayBeforeReconnect: 10,
+    })
+    : new browserEntry.RemoteClient({
+      password: 'browser-acceptance-secret',
+      id: clientId,
+      url: url('base'),
+      webSocketConstructor: WebSocket,
+      perfectWSConstructor: browserEntry.PerfectWS,
+      debugging: true,
+      delayBeforeReconnect: 10,
+    });
+  result.start();
   result.router.config.runPingLoop = false;
   result.router.config.requestTimeout = 5_000;
   result.router.config.reconnectTimeout = 5_000;
@@ -26,27 +43,19 @@ function openClient(advanced = false, clientId = crypto.randomUUID()) {
     router.transformers.push(new MoneyTransform());
   }
   clients.push(result);
-  sockets.push(socket);
-  return { result, socket };
+  return { result };
 }
 
 afterEach(async () => {
-  for (const result of clients.splice(0)) result.unregister();
-  await Promise.all(sockets.splice(0).map(async socket => {
-    if (socket.readyState === WebSocket.CLOSED) return;
-    const closed = new Promise<void>(resolve => {
-      socket.addEventListener('close', () => resolve(), { once: true });
-      socket.addEventListener('error', () => resolve(), { once: true });
-    });
-    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close();
-    await Promise.race([closed, new Promise<void>(resolve => setTimeout(resolve, 1_000))]);
-  }));
+  for (const result of clients.splice(0)) result.stop();
 });
 
 describe('browser package entry', () => {
-  it('uses the browser export condition and excludes Node-only auth hosts', () => {
+  it('uses the browser export condition and exposes browser-safe auth dialers only', () => {
     expect(conditionalEntry.PerfectWS).toBe(browserEntry.PerfectWS);
     expect(conditionalEntry.PerfectWSAdvanced).toBe(browserEntry.PerfectWSAdvanced);
+    expect(conditionalEntry.RemoteClient).toBe(browserEntry.RemoteClient);
+    expect(conditionalEntry.RemoteServer).toBe(browserEntry.RemoteServer);
     expect('ServerHost' in conditionalEntry).toBe(false);
     expect('ClientHost' in conditionalEntry).toBe(false);
   });
@@ -169,17 +178,12 @@ describe('browser to Node PerfectWSAdvanced', () => {
 
   it('keeps a returned callback alive across a real browser WebSocket reconnect', async () => {
     const clientId = crypto.randomUUID();
-    const { result, socket } = openClient(true, clientId);
+    const { result } = openClient(true, clientId);
     await result.router.serverOpen;
     const remoteCallback: any = await result.router.request('/node-callback', null);
 
-    const closed = new Promise<void>(resolve => socket.addEventListener('close', () => resolve(), { once: true }));
-    socket.close(4000, 'browser reconnect test');
-    await closed;
-
-    const replacement = new WebSocket(url('advanced'));
-    sockets.push(replacement);
-    result.setServer(replacement);
+    await expect(result.router.request('/drop-connection')).resolves.toEqual({ dropping: true });
+    await new Promise(resolve => setTimeout(resolve, 30));
     await result.router.serverOpen;
 
     await expect(remoteCallback(9)).resolves.toBe(10);

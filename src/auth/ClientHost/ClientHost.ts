@@ -221,8 +221,10 @@ export class ClientHost<Constructor extends typeof PerfectWS = typeof PerfectWS>
             if (this._options.verbose) console.error('[PerfectWS::ClientHost] Server connection error:', err);
         });
 
-        forceWS.on('close', () => {
-            if (this._options.logAuthFlow) console.log(`[PerfectWS::ClientHost] Server disconnected (${ this._lastServerId })`);
+        forceWS.on('close', (event) => {
+            if (this._options.logAuthFlow) console.log(
+                `[PerfectWS::ClientHost] Server disconnected (${ this._lastServerId }; code=${ event.code }; reason=${ JSON.stringify(event.reason) }; clean=${ event.wasClean })`
+            );
         });
         } finally {
             forceWS.off('close', unregister);
