@@ -419,8 +419,8 @@ describe('Utility Classes', () => {
       subRoute1.on('method1', vi.fn());
       subRoute2.on('method2', vi.fn());
 
-      parentRouter.use(subRoute1);
-      parentRouter.use(subRoute2);
+      parentRouter.mount('', subRoute1);
+      parentRouter.mount('', subRoute2);
 
       expect(parentRouter._listenForRequests.has('method1')).toBe(true);
       expect(parentRouter._listenForRequests.has('method2')).toBe(true);
@@ -436,8 +436,8 @@ describe('Utility Classes', () => {
       subRoute1.on('shared', callback1);
       subRoute2.on('shared', callback2);
 
-      parentRouter.use(subRoute1);
-      parentRouter.use(subRoute2);
+      parentRouter.mount('', subRoute1);
+      parentRouter.mount('', subRoute2);
 
       const handler = parentRouter._listenForRequests.get('shared');
       expect(handler?.callbacks?.[0]).toBe(callback2);

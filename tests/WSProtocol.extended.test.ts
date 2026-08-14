@@ -80,6 +80,7 @@ describe('PerfectWS Extended Coverage', () => {
       const requestData = {
         method: 'testMethod',
         requestId: 'test123',
+        clientId: 'test-client',
         data: { test: 'data' }
       };
 
@@ -105,13 +106,12 @@ describe('PerfectWS Extended Coverage', () => {
         forceClose: vi.fn()
       } as any;
 
-      // Mock the checkPingInterval function behavior
-      router['_lastPingTime'] = Date.now() - 100; // Set old ping time
+      router['_lastPingTimes'].set(mockWs, Date.now() - 100);
 
       // Call checkPingInterval directly
       const checkPingInterval = async (socket: any) => {
         if (socket.readyState == WebSocketForce.OPEN) {
-          if (Date.now() - router['_lastPingTime'] > router.config.pingReceiveTimeout) {
+          if (Date.now() - (router['_lastPingTimes'].get(socket) ?? 0) > router.config.pingReceiveTimeout) {
             socket.forceClose(1000, 'Ping timeout');
           }
         }
@@ -199,7 +199,7 @@ describe('PerfectWS Extended Coverage', () => {
       });
 
       expect(result).toEqual({ response: 'test' });
-      expect(callback).toHaveBeenCalledWith({ response: 'test' }, undefined, true);
+      expect(callback).toHaveBeenCalledWith({ response: 'test' }, null, true);
     });
 
     it('should handle request with events', async () => {
@@ -233,6 +233,11 @@ describe('PerfectWS Extended Coverage', () => {
 
     it('should handle request abort with AbortSignal', async () => {
       const { router, setServer } = PerfectWS.client();
+      router.config.syncRequestsWhenServerOpen = false;
+      router.config.runPingLoop = false;
+      router.config.ackTimeout = 20;
+      router.config.ackRetryDelays = [];
+      router.config.sendRequestRetries = 1;
       const mockWs = {
         readyState: 1,
         addEventListener: vi.fn(),
@@ -255,6 +260,11 @@ describe('PerfectWS Extended Coverage', () => {
 
       await expect(promise).rejects.toThrow('User cancelled');
       expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('Request aborted'));
+      const packets = mockWs.send.mock.calls.map(([packet]) => BSON.deserialize(packet));
+      expect(packets).toContainEqual(expect.objectContaining({
+        requestId: expect.any(String),
+        event: { eventName: '___abort', args: ['User cancelled'] },
+      }));
 
       consoleWarnSpy.mockRestore();
     });
@@ -301,18 +311,24 @@ describe('PerfectWS Extended Coverage', () => {
     it('should handle ___syncRequests', async () => {
       const { router } = PerfectWS.server();
 
-      // Add some active responses
+      // Add some active responses, connected to the same client that will send the sync request
+      const fakeWs = { readyState: 1, addEventListener: vi.fn(), removeEventListener: vi.fn() } as any;
       router['_activeResponses'].set('req1', {
         events: new NetworkEventListener(),
-        clients: new Set()
+        clientRef: { ref: fakeWs },
+        clientId: 'client-1'
       });
       router['_activeResponses'].set('req2', {
         events: new NetworkEventListener(),
-        clients: new Set()
+        clientRef: { ref: fakeWs },
+        clientId: 'client-1'
       });
 
       const handler = router['_listenForRequests'].get('___syncRequests');
-      const result = await handler?.callbacks?.[0]?.({ activeRequestsIds: ['req1', 'req3'] }, {} as any);
+      const result = await handler?.callbacks?.[0]?.(
+        { activeRequestsIds: ['req1', 'req3'] },
+        { ws: fakeWs, clientId: 'client-1', requestId: 'sync-current' } as any
+      );
 
       expect(result).toEqual(['req3']); // req3 is unknown
     });
@@ -322,25 +338,29 @@ describe('PerfectWS Extended Coverage', () => {
 
       router['_activeResponses'].set('req1', {
         events: new NetworkEventListener(),
-        clients: new Set()
+        clientRef: { ref: null },
+        clientId: 'client-1'
       });
 
       const handler = router['_listenForRequests'].get('___hasRequest');
-      const result1 = await handler?.callbacks?.[0]?.({ requestId: 'req1' }, {} as any);
-      const result2 = await handler?.callbacks[0]({ requestId: 'req2' }, {} as any);
+      const result1 = await handler?.callbacks?.[0]?.({ requestId: 'req1' }, { clientId: 'client-1' } as any);
+      const result2 = await handler?.callbacks[0]({ requestId: 'req2' }, { clientId: 'client-1' } as any);
+      const otherClient = await handler?.callbacks[0]({ requestId: 'req1' }, { clientId: 'client-2' } as any);
 
       expect(result1).toBe(true);
       expect(result2).toBe(false);
+      expect(otherClient).toBe(false);
     });
 
     it('should handle ___ping', async () => {
       const { router } = PerfectWS.server();
+      const socket = {} as any;
 
       const handler = router['_listenForRequests'].get('___ping');
-      const result = await handler?.callbacks?.[0]?.({}, {} as any);
+      const result = await handler?.callbacks?.[0]?.({}, { ws: socket } as any);
 
       expect(result).toBe('pong');
-      expect(router['_lastPingTime']).toBeGreaterThan(0);
+      expect(router['_lastPingTimes'].get(socket)).toBeGreaterThan(0);
     });
   });
 
@@ -384,6 +404,7 @@ describe('PerfectWS Extended Coverage', () => {
 
     it('should resolve serverOpen promise when connected', async () => {
       const { router, setServer } = PerfectWS.client();
+      router.config.syncRequestsWhenServerOpen = false;
       const mockWs = {
         readyState: 1,
         addEventListener: vi.fn(),
@@ -402,6 +423,7 @@ describe('PerfectWS Extended Coverage', () => {
 
       const promise = router.serverOpen;
       expect(promise).toBeInstanceOf(Promise);
+      void promise.catch(() => { });
     });
 
     it('should get bufferedAmount from server', () => {
@@ -445,6 +467,7 @@ describe('PerfectWS Extended Coverage', () => {
         data: BSON.serialize({
           method: 'unknownMethod',
           requestId: 'test123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -495,7 +518,7 @@ describe('PerfectWS Extended Coverage', () => {
       const subRoute = PerfectWS.Router();
 
       subRoute.on('subroute.test', async () => ({ result: 'from subroute' }));
-      router.use(subRoute);
+      router.mount('', subRoute);
 
       expect(subRoute['_protocol']).toBe(router);
     });
@@ -568,6 +591,7 @@ describe('PerfectWS Extended Coverage', () => {
         data: BSON.serialize({
           method: 'streamTest',
           requestId: 'stream123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -603,6 +627,7 @@ describe('PerfectWS Extended Coverage', () => {
         data: BSON.serialize({
           method: 'rejectTest',
           requestId: 'reject123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -635,6 +660,7 @@ describe('PerfectWS Extended Coverage', () => {
         data: BSON.serialize({
           method: 'throwTest',
           requestId: 'throw123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -642,11 +668,75 @@ describe('PerfectWS Extended Coverage', () => {
       const sentData = BSON.deserialize(mockWs.send.mock.calls[0][0]);
       expect(sentData.error).toEqual({ message: 'Handler error', code: 'throwError' });
     });
+
+    it.each([
+      ['null', null, 'null'],
+      ['zero', 0, '0'],
+      ['undefined', undefined, 'undefined'],
+    ])('should return a protocol error when a handler throws %s', async (_label, thrown, expected) => {
+      const { router, attachClient } = PerfectWS.server();
+      const mockWs = {
+        readyState: 1,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        send: vi.fn()
+      };
+      let messageHandler: any;
+      mockWs.addEventListener.mockImplementation((event, handler) => {
+        if (event === 'message') messageHandler = handler;
+      });
+      router.on('throwNonError', () => { throw thrown; });
+      attachClient(mockWs as any);
+
+      await messageHandler({
+        data: BSON.serialize({
+          method: 'throwNonError',
+          requestId: `throw-${_label}`,
+          clientId: 'test-client',
+          data: null
+        })
+      });
+
+      const sentData = BSON.deserialize(mockWs.send.mock.calls[0][0]);
+      expect(sentData.error).toEqual({ message: expected, code: 'throwError' });
+    });
+
+    it('should contain a thrown value that resists inspection and string conversion', async () => {
+      const { router, attachClient } = PerfectWS.server();
+      const mockWs = {
+        readyState: 1,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        send: vi.fn()
+      };
+      let messageHandler: any;
+      mockWs.addEventListener.mockImplementation((event, handler) => {
+        if (event === 'message') messageHandler = handler;
+      });
+      const hostile = new Proxy({}, {
+        has: () => { throw new Error('blocked'); },
+        get: () => { throw new Error('blocked'); },
+      });
+      router.on('throwHostile', () => { throw hostile; });
+      attachClient(mockWs as any);
+
+      await messageHandler({
+        data: BSON.serialize({
+          method: 'throwHostile',
+          requestId: 'throw-hostile',
+          clientId: 'test-client',
+          data: null
+        })
+      });
+
+      const sentData = BSON.deserialize(mockWs.send.mock.calls[0][0]);
+      expect(sentData.error).toEqual({ message: 'Unknown error', code: 'throwError' });
+    });
   });
 
   describe('Additional Coverage', () => {
-    it('should handle server cleanup on close', async () => {
-      const { router, setServer } = PerfectWS.client();
+    it('should remove server listeners on unregister', async () => {
+      const { router, setServer, unregister } = PerfectWS.client();
       const mockWs = {
         readyState: 1,
         addEventListener: vi.fn(),
@@ -654,29 +744,15 @@ describe('PerfectWS Extended Coverage', () => {
         close: vi.fn()
       };
 
-      let closeHandler: any;
-      mockWs.addEventListener.mockImplementation((event, handler) => {
-        if (event === 'close') closeHandler = handler;
-      });
-
       setServer(mockWs as any);
       expect(router['_server']).toBeDefined();
 
-      // Change readyState to CLOSED before triggering close
-      mockWs.readyState = 3;
+      const messageCall = mockWs.addEventListener.mock.calls.find(call => call[0] === 'message');
+      expect(messageCall).toBeDefined();
 
-      // Trigger close event
-      if (closeHandler) {
-        closeHandler();
-      }
+      unregister();
 
-      // Give time for cleanup
-      await sleep(10);
-
-      // Check that a close listener was registered at some point
-      const closeCall = mockWs.addEventListener.mock.calls.find(call => call[0] === 'close');
-      expect(closeCall).toBeDefined();
-      expect(closeCall?.[1]).toBeInstanceOf(Function);
+      expect(mockWs.removeEventListener).toHaveBeenCalledWith('message', messageCall?.[1], undefined);
     });
 
     it('should handle WebSocket error events', () => {

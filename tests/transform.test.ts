@@ -1,36 +1,96 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { serializeWith } from './utils/serializeWith.js';
 import { TransformAbortSignal } from '../src/PerfectWSAdvanced/transform/TransformAbortSignal.ts';
 import { TransformCallbacks } from '../src/PerfectWSAdvanced/transform/TransformCallbacks.ts';
 // Replaced by CustomTransformers
 import { CustomTransformers, TransformInstruction } from '../src/PerfectWSAdvanced/transform/CustomTransformers.ts';
-import { transformSendDeserializeType } from '../src/PerfectWSAdvanced/transform/utils/changeType.ts';
+import { transformReceivedDeserializeType } from '../src/PerfectWSAdvanced/transform/utils/changeType.ts';
 import { NetworkEventListener } from '../src/utils/NetworkEventListener.ts';
 import { PerfectWSError } from '../src/PerfectWSError.ts';
 
 describe('Transform Utilities', () => {
   describe('TransformAbortSignal', () => {
     let events: NetworkEventListener;
+    let callbacks: TransformCallbacks;
     let transform: TransformAbortSignal;
 
     beforeEach(() => {
       events = new NetworkEventListener();
-      transform = new TransformAbortSignal(events, 10);
+      callbacks = new TransformCallbacks(events, 10);
+      transform = new TransformAbortSignal(callbacks, 10);
+    });
+
+    it('allocates no signal identity maps for values without signals', () => {
+      serializeWith(transform, { value: 1 });
+
+      expect(transform['_inboundStates']).toBeUndefined();
+      expect(transform['_inboundSignals']).toBeUndefined();
+      expect(transform['_outboundSubscriptions']).toBeUndefined();
+      expect(transform['_outboundSignals']).toBeUndefined();
     });
 
     it('should serialize AbortSignal', () => {
       const abortController = new AbortController();
       const data = { signal: abortController.signal };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.signal).toHaveProperty('___type', 'abortSignal');
-      expect(serialized.signal).toHaveProperty('signalId');
+      expect(serialized.signal.subscribe).toBeTypeOf('function');
+    });
+
+    it('reuses one subscription and one received signal for the same AbortSignal', () => {
+      const controller = new AbortController();
+      const first = serializeWith(transform, controller.signal);
+      const second = serializeWith(transform, controller.signal);
+
+      expect(second.subscribe).toBe(first.subscribe);
+      expect(transform.deserialize(first)).toBe(controller.signal);
+
+      const receiver = new TransformAbortSignal(
+        new TransformCallbacks(new NetworkEventListener(), 10),
+        10,
+      );
+      const received = receiver.deserialize({ first, second });
+      expect(received.second).toBe(received.first);
+      expect(receiver['_inboundStates']?.has(received.first)).toBe(true);
+    });
+
+    it('round-trips an already-aborted signal without live state', () => {
+      const abortController = new AbortController();
+      abortController.abort('already stopped');
+
+      const serialized = serializeWith(transform, { signal: abortController.signal });
+      const deserialized = transform.deserialize(serialized);
+
+      expect(deserialized.signal.aborted).toBe(true);
+      expect(deserialized.signal.reason).toBe('already stopped');
+    });
+
+    it('reuses an already-aborted signal within one message without live state', () => {
+      const abortController = new AbortController();
+      abortController.abort('already stopped');
+      const serialized = serializeWith(transform, {
+        first: abortController.signal,
+        second: abortController.signal,
+      });
+      const receiver = new TransformAbortSignal(
+        new TransformCallbacks(new NetworkEventListener(), 10),
+        10,
+      );
+
+      expect(serialized.second.abortId).toBe(serialized.first.abortId);
+      const received = receiver.deserialize(serialized);
+      expect(received.second).toBe(received.first);
+      expect(received.first.aborted).toBe(true);
+      expect(receiver['_inboundStates']).toBeUndefined();
     });
 
     it('should deserialize AbortSignal', () => {
       const serializedData = {
         signal: {
+          ___perfectWS: 1,
           ___type: 'abortSignal',
-          signalId: 'test-signal-id'
+          subscribe: () => { }
         }
       };
 
@@ -42,20 +102,13 @@ describe('Transform Utilities', () => {
       const abortController = new AbortController();
       const data = { signal: abortController.signal };
 
-      const serialized = transform.serialize(data);
-      expect(serialized.signal).toHaveProperty('signalId');
-
+      const serialized = serializeWith(transform, data);
       const deserialized = transform.deserialize(serialized);
       expect(deserialized.signal).toBeInstanceOf(AbortSignal);
-
-      // Verify the event listener is set up
-      const signalId = serialized.signal.signalId;
-
-      // Trigger abort on original signal
       abortController.abort('Test abort reason');
 
-      // The transform should emit the event
-      events.emit(`___abortSignal.aborted.${signalId}`, { reason: 'Test abort reason' });
+      expect(deserialized.signal.aborted).toBe(true);
+      expect(deserialized.signal.reason).toBe('Test abort reason');
     });
 
     it('should handle nested AbortSignals', () => {
@@ -70,7 +123,7 @@ describe('Transform Utilities', () => {
         }
       };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.level1.signal1).toHaveProperty('___type', 'abortSignal');
       expect(serialized.level1.level2.signal2).toHaveProperty('___type', 'abortSignal');
 
@@ -80,14 +133,14 @@ describe('Transform Utilities', () => {
     });
 
     it('should handle max depth during serialization', () => {
-      const transform = new TransformAbortSignal(events, 0);
+      const transform = new TransformAbortSignal(callbacks, 0);
       const ac = new AbortController();
       const data = {
         signal: ac.signal
       };
 
       // Should return object as-is when depth exceeded
-      const result = transform.serialize(data);
+      const result = serializeWith(transform, data);
       expect(result.signal).toBe(ac.signal); // Not transformed due to depth limit
     });
 
@@ -100,7 +153,7 @@ describe('Transform Utilities', () => {
         boolean: true
       };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized).toEqual(data);
 
       const deserialized = transform.deserialize(data);
@@ -112,10 +165,55 @@ describe('Transform Utilities', () => {
       const ac2 = new AbortController();
       const data = [ac1.signal, { nested: ac2.signal }, 'string'];
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized[0]).toHaveProperty('___type', 'abortSignal');
       expect(serialized[1].nested).toHaveProperty('___type', 'abortSignal');
       expect(serialized[2]).toBe('string');
+    });
+
+    it('releases the inbound subscription after abort', () => {
+      const abortController = new AbortController();
+      const serialized = serializeWith(transform, abortController.signal);
+      const receiver = new TransformAbortSignal(
+        new TransformCallbacks(new NetworkEventListener(), 10),
+        10,
+      );
+      const received = receiver.deserialize(serialized);
+
+      expect(receiver['_inboundStates']?.has(received)).toBe(true);
+      abortController.abort('stopped');
+
+      expect(received.aborted).toBe(true);
+      expect(received.reason).toBe('stopped');
+      expect(receiver['_inboundStates']?.has(received)).toBe(false);
+    });
+
+    it('releases an inbound subscription that fails', async () => {
+      const received = transform.deserialize({
+        ___perfectWS: 1,
+        ___type: 'abortSignal',
+        subscribe: () => Promise.reject(new Error('subscription failed')),
+      });
+
+      expect(transform['_inboundStates']?.has(received)).toBe(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(transform['_inboundStates']?.has(received)).toBe(false);
+    });
+
+    it('removes the owner listener when the subscribe callback is released', async () => {
+      const controller = new AbortController();
+      const marker = serializeWith(transform, controller.signal);
+      const encoded = serializeWith(callbacks, marker);
+      const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+
+      await marker.subscribe(() => undefined);
+      events._emitWithSource('___callback.release', 'remote', {
+        funcId: encoded.subscribe.funcId,
+      });
+
+      expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+      expect(callbacks.hasLiveState()).toBe(false);
     });
   });
 
@@ -132,7 +230,7 @@ describe('Transform Utilities', () => {
       const func = function testFunction() { return 'test'; };
       const data = { callback: func };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.callback).toHaveProperty('___type', 'callback');
       expect(serialized.callback).toHaveProperty('funcId');
       expect(serialized.callback.funcName).toBe('testFunction');
@@ -142,7 +240,7 @@ describe('Transform Utilities', () => {
       const func = () => 'test';
       const data = { callback: func };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.callback).toHaveProperty('___type', 'callback');
       expect(serialized.callback).toHaveProperty('funcId');
       expect(serialized.callback.funcName).toBe('func');
@@ -151,7 +249,7 @@ describe('Transform Utilities', () => {
     it('should serialize anonymous functions', () => {
       const data = { callback: function() { return 'test'; } };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.callback).toHaveProperty('___type', 'callback');
       expect(serialized.callback).toHaveProperty('funcId');
     });
@@ -159,6 +257,7 @@ describe('Transform Utilities', () => {
     it('should deserialize functions', () => {
       const serializedData = {
         callback: {
+          ___perfectWS: 1,
           ___type: 'callback',
           funcId: 'test-func-id',
           funcName: 'testFunc'
@@ -174,7 +273,7 @@ describe('Transform Utilities', () => {
       const originalFunc = vi.fn((a: number, b: number) => a + b);
       const data = { add: originalFunc };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       const funcId = serialized.add.funcId;
 
       expect(serialized.add).toHaveProperty('___type', 'callback');
@@ -188,7 +287,7 @@ describe('Transform Utilities', () => {
       const errorFunc = () => { throw new Error('Function error'); };
       const data = { errorCallback: errorFunc };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
 
       expect(serialized.errorCallback).toHaveProperty('___type', 'callback');
       expect(serialized.errorCallback).toHaveProperty('funcId');
@@ -200,6 +299,7 @@ describe('Transform Utilities', () => {
     it('should handle missing function on invocation', () => {
       const deserialized = transform.deserialize({
         callback: {
+          ___perfectWS: 1,
           ___type: 'callback',
           funcId: 'non-existent',
           funcName: 'missing'
@@ -215,8 +315,8 @@ describe('Transform Utilities', () => {
       const data1 = { callback: func };
       const data2 = { callback: func };
 
-      const serialized1 = transform.serialize(data1);
-      const serialized2 = transform.serialize(data2);
+      const serialized1 = serializeWith(transform, data1);
+      const serialized2 = serializeWith(transform, data2);
 
       expect(serialized1.callback.funcId).toBe(serialized2.callback.funcId);
     });
@@ -233,7 +333,7 @@ describe('Transform Utilities', () => {
         }
       };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.level1.callback1).toHaveProperty('___type', 'callback');
       expect(serialized.level1.level2.callback2).toHaveProperty('___type', 'callback');
     });
@@ -246,7 +346,7 @@ describe('Transform Utilities', () => {
       };
 
       // Should return object as-is when depth exceeded
-      const result = transform.serialize(data);
+      const result = serializeWith(transform, data);
       expect(result.callback).toBe(func); // Not transformed due to depth limit
     });
 
@@ -256,7 +356,7 @@ describe('Transform Utilities', () => {
         value: 42
       };
 
-      const serialized = transform.serialize(obj);
+      const serialized = serializeWith(transform, obj);
       expect(serialized.method).toHaveProperty('___type', 'callback');
       expect(serialized.value).toBe(42);
     });
@@ -299,7 +399,7 @@ describe('Transform Utilities', () => {
       const instance = new TestClass('test value');
       const data = { obj: instance };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.obj).toHaveProperty('___type', 'customTransformer');
       expect(serialized.obj).toHaveProperty('uniqueId', 'TestClass');
       expect(serialized.obj.serialized).toBe(JSON.stringify({ value: 'test value' }));
@@ -309,13 +409,14 @@ describe('Transform Utilities', () => {
       const instance = new AnotherClass(42);
       const data = { obj: instance };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.obj.uniqueId).toBe('CustomAnotherClass');
     });
 
     it('should deserialize known class instances', () => {
       const serializedData = {
         obj: {
+          ___perfectWS: 1,
           ___type: 'customTransformer',
           uniqueId: 'TestClass',
           serialized: JSON.stringify({ value: 'deserialized' })
@@ -330,6 +431,7 @@ describe('Transform Utilities', () => {
     it('should throw error for unknown transformer during deserialization', () => {
       const serializedData = {
         obj: {
+          ___perfectWS: 1,
           ___type: 'customTransformer',
           uniqueId: 'UnknownClass',
           serialized: '{}'
@@ -349,7 +451,7 @@ describe('Transform Utilities', () => {
         }
       };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.level1.instance1).toHaveProperty('___type', 'customTransformer');
       expect(serialized.level1.level2.instance2).toHaveProperty('___type', 'customTransformer');
 
@@ -368,7 +470,7 @@ describe('Transform Utilities', () => {
         new TestClass('second')
       ];
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized[0]).toHaveProperty('___type', 'customTransformer');
       expect(serialized[1].nested).toHaveProperty('___type', 'customTransformer');
       expect(serialized[2]).toBe('string');
@@ -384,13 +486,13 @@ describe('Transform Utilities', () => {
         undefined: undefined
       };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized).toEqual(data);
     });
 
     it('should handle class instance at root level', () => {
       const instance = new TestClass('root');
-      const serialized = transform.serialize(instance);
+      const serialized = serializeWith(transform, instance);
 
       expect(serialized).toHaveProperty('___type', 'customTransformer');
       expect(serialized.uniqueId).toBe('TestClass');
@@ -405,21 +507,21 @@ describe('Transform Utilities', () => {
       const instance = new TestClass('test');
       const data = { obj: instance };
 
-      const serialized = transform.serialize(data);
+      const serialized = serializeWith(transform, data);
       expect(serialized.obj).toBe(instance);
     });
   });
 
-  describe('transformSendDeserializeType', () => {
+  describe('transformReceivedDeserializeType', () => {
     it('should transform objects with specific type', () => {
       const data = {
-        value1: { ___type: 'testType', data: 'test1' },
+        value1: { ___perfectWS: 1, ___type: 'testType', data: 'test1' },
         nested: {
-          value2: { ___type: 'testType', data: 'test2' }
+          value2: { ___perfectWS: 1, ___type: 'testType', data: 'test2' }
         }
       };
 
-      const result = transformSendDeserializeType(data, 'testType', (found) => {
+      const result = transformReceivedDeserializeType(data, 'testType', (found) => {
         return `transformed-${found.data}`;
       });
 
@@ -428,22 +530,44 @@ describe('Transform Utilities', () => {
     });
 
     it('should handle transformation at root level', () => {
-      const data = { ___type: 'testType', data: 'root' };
+      const data = { ___perfectWS: 1, ___type: 'testType', data: 'root' };
 
-      const result = transformSendDeserializeType(data, 'testType', (found) => {
+      const result = transformReceivedDeserializeType(data, 'testType', (found) => {
         return `transformed-${found.data}`;
       });
 
       expect(result).toBe('transformed-root');
     });
 
+    it('does not confuse a nested sole root property with the walker root', () => {
+      const marker = { ___perfectWS: 1, ___type: 'testType', data: 'nested-root' };
+      const nested = {} as { root: typeof marker | string };
+      Object.defineProperty(nested, 'root', {
+        value: marker,
+        configurable: true,
+        enumerable: true,
+        writable: false,
+      });
+
+      const result = transformReceivedDeserializeType({ nested }, 'testType', found => {
+        return `transformed-${found.data}`;
+      });
+
+      expect(result.nested.root).toBe('transformed-nested-root');
+      expect(Object.getOwnPropertyDescriptor(result.nested, 'root')).toMatchObject({
+        configurable: true,
+        enumerable: true,
+        writable: false,
+      });
+    });
+
     it('should skip non-matching types', () => {
       const data = {
         value1: { ___type: 'otherType', data: 'test1' },
-        value2: { ___type: 'testType', data: 'test2' }
+        value2: { ___perfectWS: 1, ___type: 'testType', data: 'test2' }
       };
 
-      const result = transformSendDeserializeType(data, 'testType', (found) => {
+      const result = transformReceivedDeserializeType(data, 'testType', (found) => {
         return `transformed-${found.data}`;
       });
 
@@ -452,10 +576,10 @@ describe('Transform Utilities', () => {
     });
 
     it('should handle circular references', () => {
-      const obj: any = { ___type: 'testType', data: 'test' };
+      const obj: any = { ___perfectWS: 1, ___type: 'testType', data: 'test' };
       obj.circular = obj;
 
-      const result = transformSendDeserializeType(obj, 'testType', (found) => {
+      const result = transformReceivedDeserializeType(obj, 'testType', (found) => {
         return `transformed-${found.data}`;
       });
 
@@ -465,15 +589,15 @@ describe('Transform Utilities', () => {
     it('should handle max depth exceeded', () => {
       const createDeepObject = (depth: number): any => {
         if (depth === 0) {
-          return { ___type: 'testType', data: 'deep' };
+          return { ___perfectWS: 1, ___type: 'testType', data: 'deep' };
         }
         return { nested: createDeepObject(depth - 1) };
       };
 
       const data = createDeepObject(3);
 
-      // transformSendDeserializeType should stop at max depth
-      const result = transformSendDeserializeType(data, 'testType', (found) => 'transformed', 1);
+      // transformReceivedDeserializeType should stop at max depth
+      const result = transformReceivedDeserializeType(data, 'testType', (found) => 'transformed', 1);
 
       // The deep object should not be transformed (beyond depth limit)
       expect(result.nested.nested).toBeDefined();
@@ -482,12 +606,12 @@ describe('Transform Utilities', () => {
 
     it('should handle arrays', () => {
       const data = [
-        { ___type: 'testType', data: 'first' },
+        { ___perfectWS: 1, ___type: 'testType', data: 'first' },
         'string',
-        { nested: { ___type: 'testType', data: 'second' } }
+        { nested: { ___perfectWS: 1, ___type: 'testType', data: 'second' } }
       ];
 
-      const result = transformSendDeserializeType(data, 'testType', (found) => {
+      const result = transformReceivedDeserializeType(data, 'testType', (found) => {
         return `transformed-${found.data}`;
       });
 
@@ -501,11 +625,11 @@ describe('Transform Utilities', () => {
         null: null,
         undefined: undefined,
         nested: {
-          value: { ___type: 'testType', data: 'test' }
+          value: { ___perfectWS: 1, ___type: 'testType', data: 'test' }
         }
       };
 
-      const result = transformSendDeserializeType(data, 'testType', (found) => {
+      const result = transformReceivedDeserializeType(data, 'testType', (found) => {
         return `transformed-${found.data}`;
       });
 
@@ -515,19 +639,19 @@ describe('Transform Utilities', () => {
     });
 
     it('should handle primitive values at root', () => {
-      expect(transformSendDeserializeType('string', 'testType', () => 'transformed')).toBe('string');
-      expect(transformSendDeserializeType(42, 'testType', () => 'transformed')).toBe(42);
-      expect(transformSendDeserializeType(true, 'testType', () => 'transformed')).toBe(true);
-      expect(transformSendDeserializeType(null, 'testType', () => 'transformed')).toBe(null);
+      expect(transformReceivedDeserializeType('string', 'testType', () => 'transformed')).toBe('string');
+      expect(transformReceivedDeserializeType(42, 'testType', () => 'transformed')).toBe(42);
+      expect(transformReceivedDeserializeType(true, 'testType', () => 'transformed')).toBe(true);
+      expect(transformReceivedDeserializeType(null, 'testType', () => 'transformed')).toBe(null);
     });
 
     it('should use iterative approach for performance', () => {
       const data = {
-        a: { b: { c: { d: { e: { ___type: 'testType', data: 'deep' } } } } }
+        a: { b: { c: { d: { e: { ___perfectWS: 1, ___type: 'testType', data: 'deep' } } } } }
       };
 
       const transformSpy = vi.fn((found) => `transformed-${found.data}`);
-      const result = transformSendDeserializeType(data, 'testType', transformSpy);
+      const result = transformReceivedDeserializeType(data, 'testType', transformSpy);
 
       expect(transformSpy).toHaveBeenCalledTimes(1);
       expect(result.a.b.c.d.e).toBe('transformed-deep');

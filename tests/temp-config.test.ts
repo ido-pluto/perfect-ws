@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PerfectWS } from '../src/PerfectWS.js';
 import { WebSocketServer, WebSocket } from 'ws';
 
-const PORT = 8095;
+let PORT: number;
 
 describe('Temp Config Tests', () => {
     let wss: WebSocketServer;
@@ -10,8 +10,15 @@ describe('Temp Config Tests', () => {
     let attachClient: (ws: any) => void;
     let unregisterServer: () => void;
 
-    beforeEach(() => {
-        wss = new WebSocketServer({ port: PORT });
+    beforeEach(async () => {
+        wss = new WebSocketServer({ port: 0 });
+        await new Promise<void>((resolve, reject) => {
+            wss.once('listening', resolve);
+            wss.once('error', reject);
+        });
+        const address = wss.address();
+        if (address === null || typeof address === 'string') throw new Error('Missing WebSocket address');
+        PORT = address.port;
         const serverResult = PerfectWS.server();
         serverRouter = serverResult.router;
         attachClient = serverResult.attachClient;
@@ -22,9 +29,10 @@ describe('Temp Config Tests', () => {
         });
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         unregisterServer();
-        wss.close();
+        for (const socket of wss.clients) socket.terminate();
+        await new Promise<void>(resolve => wss.close(() => resolve()));
     });
 
     it('should create client with temp config only (signature 1)', async () => {
@@ -94,7 +102,7 @@ describe('Temp Config Tests', () => {
         const validation = await tempClient.router.request('validate', { token: 'valid-token' });
         expect(validation).toEqual({ authorized: true });
 
-        tempClient.unregister();
+        tempClient.detachServer();
 
         permanentClient.setServer(ws);
 
@@ -189,7 +197,7 @@ describe('Temp Config Tests', () => {
         const tempResult = await tempClient.router.request('test', { value: 'temp' });
         expect(tempResult).toEqual({ value: 'temp' });
 
-        tempClient.unregister();
+        tempClient.detachServer();
 
         const permanentClient = PerfectWS.client(ws);
 
@@ -340,7 +348,7 @@ describe('Temp Config Tests', () => {
         const validation = await validationClient.router.request('validate', { secret: 'password' });
         expect(validation).toEqual({ token: 'abc123' });
 
-        validationClient.unregister();
+        validationClient.detachServer();
 
         permanentClient.setServer(validationWs);
 
@@ -707,7 +715,7 @@ describe('Temp Config Tests', () => {
             const tempValidation = PerfectWS.client(newWs, { temp: true });
             const validationResult = await tempValidation.router.request('validate', { key: 'secret' });
             expect(validationResult).toEqual({ authorized: true });
-            tempValidation.unregister();
+            tempValidation.detachServer();
 
             mainClient.setServer(newWs);
 
@@ -781,7 +789,7 @@ describe('Temp Config Tests', () => {
 
             const tempClient = PerfectWS.client(sharedWs, { temp: true });
             await tempClient.router.request('validate', {});
-            tempClient.unregister();
+            tempClient.detachServer();
 
             mainClient.setServer(sharedWs);
 
@@ -836,4 +844,3 @@ describe('Temp Config Tests', () => {
         });
     });
 });
-

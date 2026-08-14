@@ -21,7 +21,11 @@ describe('ACK System Tests', () => {
             expect(client.config.ackTimeout).toBe(1000);
             expect(client.config.ackRetryDelays).toEqual([3000, 5000]);
             expect(client.config.processedPacketsCleanupInterval).toBe(60000);
-            expect(client.config.maxProcessedPackets).toBe(10000);
+            expect(client.config.maxProcessedPackets).toBe(1000);
+            expect(client.config.maxTotalProcessedPackets).toBe(10000);
+            expect(client.config.maxProcessedPacketClients).toBe(1000);
+            expect(client.config.maxTotalPendingAcks).toBe(1000);
+            expect(client.config.maxTotalPendingAborts).toBe(10000);
         });
 
         it('should allow enabling/disabling ACK system', () => {
@@ -102,6 +106,32 @@ describe('ACK System Tests', () => {
 
             // Verify clearTimeout was called
             expect(clearTimeoutSpy).toHaveBeenCalled();
+        });
+
+        it('uses ackRetryDelays as each retry attempt ACK timeout', async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(0);
+            try {
+                const { router } = PerfectWS.client();
+                router.config.enableAckSystem = true;
+                router.config.ackTimeout = 10;
+                router.config.ackRetryDelays = [20, 30];
+                const privateMethods = router as any;
+                const socket = new WebSocketForce(createMockWebSocket() as any);
+                const sendTimes: number[] = [];
+                vi.spyOn(privateMethods, '_sendJSON').mockImplementation(() => {
+                    sendTimes.push(Date.now());
+                    return true;
+                });
+
+                const pending = privateMethods._sendWithAck({ method: 'timed', requestId: 'timed' }, socket);
+                await vi.advanceTimersByTimeAsync(60);
+
+                await expect(pending).resolves.toBe(false);
+                expect(sendTimes).toEqual([0, 10, 30]);
+            } finally {
+                vi.useRealTimers();
+            }
         });
 
         it('should handle ACK for non-existent packet', () => {
@@ -279,12 +309,13 @@ describe('ACK System Tests', () => {
             client.config.enableAckSystem = true;
             client.config.maxProcessedPackets = 10;
             client.config.processedPacketsCleanupInterval = 50;
+            client.config.processedPacketsRetention = 0;
 
             const privateMethods = client as any;
 
             // Add packets rapidly
             for (let i = 0; i < 100; i++) {
-                privateMethods._processedPackets.set(`packet-${i}`, Date.now() + i);
+                privateMethods._processedPackets.set(`packet-${i}`, Date.now() - 1);
             }
 
             // Trigger cleanup

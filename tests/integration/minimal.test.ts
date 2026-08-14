@@ -4,8 +4,11 @@ import { WebSocketServer, WebSocket } from 'ws';
 
 describe('Minimal Test', () => {
   it('should create server and client', async () => {
-    const port = 19080;
-    const wss = new WebSocketServer({ port });
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', resolve));
+    const address = wss.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP server address');
+    const port = address.port;
     
     const { router: server, attachClient } = PerfectWSAdvanced.server();
     server.on('test', async (data) => {

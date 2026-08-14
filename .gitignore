@@ -37,5 +37,7 @@ test-upload.ts
 .env.s3
 
 coverage/
+.vitest-attachments/
+tests/browser/tests/__screenshots__/
 .claude
 .idea

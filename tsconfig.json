@@ -23,7 +23,8 @@
         "noEmit": false,
         "outDir": "./dist",
         "strict": true,
-        "sourceMap": false,
+        "sourceMap": true,
+        "inlineSources": true,
         "composite": false,
         "declaration": true,
         "stripInternal": true

@@ -1,264 +1,68 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket, WebSocketServer } from 'ws';
 import { PerfectWS } from '../../src/index.js';
-import { WebSocketServer, WebSocket } from 'ws';
 
-const getAvailablePort = () => 8095 + Math.floor(Math.random() * 1000);
+describe('ping failure handling', () => {
+    let wss: WebSocketServer;
+    const cleanups: (() => void)[] = [];
 
-describe('Ping Error Handling - No Unhandled Rejections', () => {
-    let server: WebSocketServer;
-    let rejectionHandler: any;
-    let unhandledRejections: any[] = [];
-    let PORT: number;
-
-    beforeEach(() => {
-        PORT = getAvailablePort();
-        unhandledRejections = [];
-        rejectionHandler = (reason: any) => {
-            unhandledRejections.push(reason);
-        };
-        process.on('unhandledRejection', rejectionHandler);
+    beforeEach(async () => {
+        wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+        await new Promise<void>((resolve, reject) => {
+            wss.once('listening', resolve);
+            wss.once('error', reject);
+        });
     });
 
     afterEach(async () => {
-        process.removeListener('unhandledRejection', rejectionHandler);
-        if (server) {
-            server.clients.forEach((client) => {
-                client.close();
-            });
-            await new Promise<void>((resolve) => {
-                server.close(() => resolve());
-            });
-        }
+        for (const cleanup of cleanups.splice(0)) cleanup();
+        for (const socket of wss.clients) socket.terminate();
+        await new Promise<void>(resolve => wss.close(() => resolve()));
     });
 
-    it('should not cause unhandled rejection when ping fails', async () => {
-        server = new WebSocketServer({ port: PORT });
+    const url = () => {
+        const address = wss.address();
+        if (address === null || typeof address === 'string') throw new Error('Missing WebSocket address');
+        return `ws://127.0.0.1:${address.port}`;
+    };
 
-        const { router, autoReconnect } = PerfectWS.server();
-        router.config.connectionTimeout = 500;
-        router.config.pingRequestTimeout = 100;
-        router.config.pingIntervalMs = 50;
-        router.config.verbose = false;
+    it('closes and reconnects a server-role socket that stops sending pings', async () => {
+        let connections = 0;
+        wss.on('connection', () => { connections++; });
 
-        const stopAutoReconnect = autoReconnect(`ws://localhost:${PORT}`, WebSocket as any);
+        const result = PerfectWS.server();
+        result.router.config.runPingLoop = true;
+        result.router.config.pingIntervalMs = 5;
+        result.router.config.pingReceiveTimeout = 20;
+        result.router.config.delayBeforeReconnect = 5;
+        result.router.config.connectionTimeout = 100;
+        const stop = result.autoReconnect(url(), WebSocket as any);
+        cleanups.push(stop, result.unregister);
 
-        await new Promise<void>((resolve) => {
-            server.on('connection', (ws) => {
-                resolve();
-            });
-        });
-
-        await new Promise(resolve => setTimeout(resolve, 200));
-
-        expect(unhandledRejections).toHaveLength(0);
-
-        stopAutoReconnect();
+        await vi.waitFor(() => expect(connections).toBeGreaterThanOrEqual(2), { timeout: 500 });
     });
 
-    it('should not cause unhandled rejection when connection opens and ping immediately fails', async () => {
-        server = new WebSocketServer({ port: PORT });
+    it('closes a client-role socket when its ping request receives no response', async () => {
+        const ownerSocket = Promise.withResolvers<WebSocket>();
+        wss.once('connection', socket => ownerSocket.resolve(socket));
 
-        const { router, autoReconnect } = PerfectWS.server();
-        router.config.connectionTimeout = 500;
-        router.config.pingRequestTimeout = 50;
-        router.config.pingIntervalMs = 200;
-        router.config.verbose = false;
+        const result = PerfectWS.client();
+        result.router.config.enableAckSystem = false;
+        result.router.config.syncRequestsWhenServerOpen = false;
+        result.router.config.runPingLoop = true;
+        result.router.config.pingIntervalMs = 5;
+        result.router.config.pingRequestTimeout = 20;
+        const socket = new WebSocket(url());
+        result.setServer(socket);
+        cleanups.push(result.unregister);
 
-        server.on('connection', (ws) => {
-            ws.close();
-        });
+        await result.router.serverOpen;
+        const owner = await ownerSocket.promise;
+        const waitForClose = (ws: WebSocket) => ws.readyState === WebSocket.CLOSED
+            ? Promise.resolve()
+            : new Promise<void>(resolve => ws.once('close', () => resolve()));
+        await Promise.all([waitForClose(owner), waitForClose(socket)]);
 
-        const stopAutoReconnect = autoReconnect(`ws://localhost:${PORT}`, WebSocket as any);
-
-        await new Promise(resolve => setTimeout(resolve, 300));
-
-        expect(unhandledRejections).toHaveLength(0);
-
-        stopAutoReconnect();
-    });
-
-    it('should not cause unhandled rejection when ping times out', async () => {
-        server = new WebSocketServer({ port: PORT });
-
-        const { router, autoReconnect } = PerfectWS.server();
-        router.config.connectionTimeout = 500;
-        router.config.pingRequestTimeout = 100;
-        router.config.pingIntervalMs = 50;
-        router.config.verbose = false;
-
-        server.on('connection', (ws) => {
-            ws.on('message', () => {
-                // Ignore ping requests - let them timeout
-            });
-        });
-
-        const stopAutoReconnect = autoReconnect(`ws://localhost:${PORT}`, WebSocket as any);
-
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        expect(unhandledRejections).toHaveLength(0);
-
-        stopAutoReconnect();
-    });
-
-    it('should not cause unhandled rejection when syncRequests is enabled and ping fails', async () => {
-        server = new WebSocketServer({ port: PORT });
-
-        const { router, autoReconnect } = PerfectWS.server();
-        router.config.connectionTimeout = 500;
-        router.config.pingRequestTimeout = 100;
-        router.config.pingIntervalMs = 50;
-        router.config.syncRequestsWhenServerOpen = true;
-        router.config.verbose = false;
-
-        server.on('connection', (ws) => {
-            ws.on('message', (data) => {
-                const parsed = JSON.parse(data.toString());
-                if (parsed.method === '___syncRequests') {
-                    ws.send(JSON.stringify({
-                        requestId: parsed.requestId,
-                        data: null
-                    }));
-                }
-            });
-        });
-
-        const stopAutoReconnect = autoReconnect(`ws://localhost:${PORT}`, WebSocket as any);
-
-        await new Promise(resolve => setTimeout(resolve, 400));
-
-        expect(unhandledRejections).toHaveLength(0);
-
-        stopAutoReconnect();
-    });
-
-    it('should handle multiple rapid connection failures without unhandled rejections', async () => {
-        server = new WebSocketServer({ port: PORT });
-
-        const { router, autoReconnect } = PerfectWS.server();
-        router.config.connectionTimeout = 200;
-        router.config.pingRequestTimeout = 50;
-        router.config.pingIntervalMs = 100;
-        router.config.delayBeforeReconnect = 100;
-        router.config.verbose = false;
-
-        let connectionCount = 0;
-        server.on('connection', (ws) => {
-            connectionCount++;
-            if (connectionCount <= 3) {
-                ws.close();
-            }
-        });
-
-        const stopAutoReconnect = autoReconnect(`ws://localhost:${PORT}`, WebSocket as any);
-
-        await new Promise(resolve => setTimeout(resolve, 800));
-
-        expect(unhandledRejections).toHaveLength(0);
-        expect(connectionCount).toBeGreaterThan(2);
-
-        stopAutoReconnect();
-    });
-
-    it('should not cause unhandled rejection with verbose logging enabled', async () => {
-        server = new WebSocketServer({ port: PORT });
-
-        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
-        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
-
-        const { router, autoReconnect } = PerfectWS.server();
-        router.config.connectionTimeout = 500;
-        router.config.pingRequestTimeout = 100;
-        router.config.pingIntervalMs = 50;
-        router.config.verbose = true;
-
-        server.on('connection', (ws) => {
-            ws.close();
-        });
-
-        const stopAutoReconnect = autoReconnect(`ws://localhost:${PORT}`, WebSocket as any);
-
-        await new Promise(resolve => setTimeout(resolve, 300));
-
-        expect(unhandledRejections).toHaveLength(0);
-
-        stopAutoReconnect();
-        consoleLogSpy.mockRestore();
-        consoleErrorSpy.mockRestore();
-    });
-
-    it('should not cause unhandled rejection when server closes during ping loop', async () => {
-        server = new WebSocketServer({ port: PORT });
-
-        const { router, autoReconnect } = PerfectWS.server();
-        router.config.connectionTimeout = 500;
-        router.config.pingRequestTimeout = 100;
-        router.config.pingIntervalMs = 50;
-        router.config.verbose = false;
-
-        let ws: WebSocket | undefined;
-        server.on('connection', (socket) => {
-            ws = socket;
-            ws.on('message', (data) => {
-                const parsed = JSON.parse(data.toString());
-                if (parsed.method === '___ping') {
-                    ws!.send(JSON.stringify({
-                        requestId: parsed.requestId,
-                        data: null
-                    }));
-                }
-            });
-        });
-
-        const stopAutoReconnect = autoReconnect(`ws://localhost:${PORT}`, WebSocket as any);
-
-        await new Promise(resolve => setTimeout(resolve, 150));
-
-        if (ws) {
-            ws.close();
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 200));
-
-        expect(unhandledRejections).toHaveLength(0);
-
-        stopAutoReconnect();
-    });
-
-    it('should handle onOpen error when already connected', async () => {
-        server = new WebSocketServer({ port: PORT });
-
-        const { router, attachClient } = PerfectWS.server();
-        router.config.connectionTimeout = 500;
-        router.config.pingRequestTimeout = 100;
-        router.config.pingIntervalMs = 50;
-        router.config.verbose = false;
-
-        server.on('connection', (ws) => {
-            ws.on('message', (data) => {
-                const parsed = JSON.parse(data.toString());
-                if (parsed.method === '___ping') {
-                    ws.send(JSON.stringify({
-                        requestId: parsed.requestId,
-                        data: null
-                    }));
-                }
-            });
-        });
-
-        const ws = new WebSocket(`ws://localhost:${PORT}`);
-
-        await new Promise<void>((resolve) => {
-            ws.on('open', () => resolve());
-        });
-
-        const unregister = attachClient(ws as any);
-
-        await new Promise(resolve => setTimeout(resolve, 200));
-
-        expect(unhandledRejections).toHaveLength(0);
-
-        unregister();
+        expect(socket.readyState).toBe(WebSocket.CLOSED);
     });
 });
-

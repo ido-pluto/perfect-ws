@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { serializeWith } from './utils/serializeWith.js';
 import { TransformBinaryData } from '../src/PerfectWSAdvanced/transform/TransformBinaryData';
 import { BSON } from 'bson';
 
@@ -15,7 +16,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const subarray = original.subarray(2, 6); // [3, 4, 5, 6]
             const data = { array: subarray };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Uint8Array);
@@ -27,7 +28,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const subarray = original.subarray(1, 4); // [20, 30, 40]
             const data = { array: subarray };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Uint16Array);
@@ -39,7 +40,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const slice = original.slice(1, 4); // [2.2, 3.3, 4.4]
             const data = { array: slice };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Float32Array);
@@ -56,7 +57,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const oddOffsetView = new Uint8Array(buffer, 1, 8);
             const data = { array: oddOffsetView };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Uint8Array);
@@ -68,7 +69,7 @@ describe('TransformBinaryData - Extended Tests', () => {
         it('should handle zero-length Buffer', () => {
             const data = { buffer: Buffer.alloc(0) };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -83,7 +84,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 float64: new Float64Array(0)
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.uint8.length).toBe(0);
@@ -95,7 +96,7 @@ describe('TransformBinaryData - Extended Tests', () => {
         it('should handle zero-length ArrayBuffer', () => {
             const data = { buffer: new ArrayBuffer(0) };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(ArrayBuffer);
@@ -118,7 +119,7 @@ describe('TransformBinaryData - Extended Tests', () => {
 
             // Multiple round-trips
             for (let i = 0; i < 5; i++) {
-                const serialized = transform.serialize(data);
+                const serialized = serializeWith(transform, data);
                 data = transform.deserialize(serialized);
             }
 
@@ -132,7 +133,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const expected = [10, 20, 30, 40];
 
             for (let i = 0; i < 3; i++) {
-                const transformed = transform.serialize(data);
+                const transformed = serializeWith(transform, data);
                 const bsonSerialized = BSON.serialize(transformed);
                 const bsonDeserialized = BSON.deserialize(bsonSerialized);
                 data = transform.deserialize(bsonDeserialized);
@@ -152,7 +153,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 ]
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.matrix[0][0]).toBeInstanceOf(Buffer);
@@ -169,7 +170,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 ])
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.bufferMap.get('key1')).toBeInstanceOf(Buffer);
@@ -184,7 +185,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 bufferSet: new Set([buf1, buf2])
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.bufferSet.size).toBe(2);
@@ -209,7 +210,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 }
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.level1.buffer).toBeInstanceOf(Buffer);
@@ -225,7 +226,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 zeros: Buffer.alloc(100)
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.zeros).toBeInstanceOf(Buffer);
@@ -238,7 +239,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 filled: Buffer.alloc(50, 0xFF)
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.filled).toBeInstanceOf(Buffer);
@@ -256,7 +257,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 int32Max: new Int32Array([2147483647])
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.int8Min[0]).toBe(-128);
@@ -274,7 +275,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 doubles: new Float64Array([Infinity, -Infinity, NaN, Number.MAX_VALUE, Number.MIN_VALUE])
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.floats[0]).toBe(Infinity);
@@ -299,7 +300,7 @@ describe('TransformBinaryData - Extended Tests', () => {
 
             const data = { view };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.view).toBeInstanceOf(DataView);
@@ -319,7 +320,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const partialView = new DataView(buffer, 5, 10);
             const data = { view: partialView };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.view).toBeInstanceOf(DataView);
@@ -335,7 +336,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 buffers: Array.from({ length: 1000 }, (_, i) => Buffer.from([i % 256]))
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffers).toHaveLength(1000);
@@ -359,7 +360,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 })
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.mixed).toHaveLength(100);
@@ -376,7 +377,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const text = 'Hello 世界 🌍';
             const data = { buffer: Buffer.from(text, 'utf-8') };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -387,7 +388,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const base64 = 'SGVsbG8gV29ybGQ=';
             const data = { buffer: Buffer.from(base64, 'base64') };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -398,7 +399,7 @@ describe('TransformBinaryData - Extended Tests', () => {
             const hex = 'deadbeef';
             const data = { buffer: Buffer.from(hex, 'hex') };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -415,7 +416,7 @@ describe('TransformBinaryData - Extended Tests', () => {
 
             const data = { buffer: concatenated };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -428,7 +429,7 @@ describe('TransformBinaryData - Extended Tests', () => {
 
             const data = { uint8, int16 };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(Array.from(deserialized.uint8)).toEqual([1, 2, 3, 4, 5]);
@@ -447,7 +448,7 @@ describe('TransformBinaryData - Extended Tests', () => {
 
             const data = { array: uint32 };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Uint32Array);
@@ -463,7 +464,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 undefinedValue: undefined
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -481,7 +482,7 @@ describe('TransformBinaryData - Extended Tests', () => {
                 object: { key: 'value' }
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
 
             // None of these should be transformed
             expect(serialized.date).toBeInstanceOf(Date);
@@ -514,7 +515,7 @@ describe('TransformBinaryData - Extended Tests', () => {
 
             const data = { imageData: pixels };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.imageData).toBeInstanceOf(Uint8Array);
@@ -537,7 +538,7 @@ describe('TransformBinaryData - Extended Tests', () => {
 
             const data = { audioSamples: samples };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.audioSamples).toBeInstanceOf(Float32Array);
@@ -550,10 +551,10 @@ describe('TransformBinaryData - Extended Tests', () => {
                 sha256Hash: Buffer.from('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'hex'),
                 signature: Buffer.from(Array(64).fill(0).map((_, i) => i)),
                 publicKey: new Uint8Array(32).fill(42),
-                nonce: Buffer.from(Array(16).fill(0).map(() => Math.floor(Math.random() * 256)))
+                nonce: Buffer.from(Array.from({ length: 16 }, (_, index) => index))
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const bsonSerialized = BSON.serialize(serialized);
             const bsonDeserialized = BSON.deserialize(bsonSerialized);
             const deserialized = transform.deserialize(bsonDeserialized);
@@ -566,4 +567,3 @@ describe('TransformBinaryData - Extended Tests', () => {
         });
     });
 });
-
