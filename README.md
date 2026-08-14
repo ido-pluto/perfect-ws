@@ -11,9 +11,9 @@
 
 </div>
 
-> RPC over WebSockets for TypeScript and JavaScript. Register a handler on one side, call it from the other side.
+> Express.js like for RPC WebSockets
 
-PerfectWS includes password authentication, automatic reconnection, request timeouts, and streaming responses.
+Includes password authentication, automatic reconnection, request timeouts, and streaming responses.
 
 ## Install
 
@@ -78,6 +78,39 @@ A browser can be the client as well. See [Browser clients](docs/browser.md) for 
 ```typescript
 // browser.ts
 import { RemoteClient } from 'perfect-ws/browser';
+```
+
+### Reverse connection
+You can also use the `client` as the *host* and the `server` as the *client*. See [Authentication](docs/authentication.md) for details.
+
+```typescript
+// nodejs service
+import { ClientHost } from 'perfect-ws';
+
+const clientHost = new ClientHost({
+  port: 8080,
+  password: 'secret',
+});
+
+clientHost.start();
+
+const helloName = await clientHost.router.request('hello', { name: 'Ada' });
+console.log(helloName); // Hello, Ada!
+```
+
+```typescript
+
+// browser client
+import { RemoteServer } from 'perfect-ws/browser';
+
+const remoteServer = new RemoteServer();
+remoteServer.router.on('hello', (data) => 'Hello, ' + data.name);
+
+const unregisterConnection = await remoteServer.attachClient('wss://example.com/', 'secret');
+
+setTimeout(() => {
+  unregisterConnection();
+}, 60_000);
 ```
 
 ### Request timeouts
@@ -223,7 +256,7 @@ Use `PureRPC` when an object should remain on its owner but the peer needs to re
 // server
 import { PerfectWSAdvanced, PureRPC, ServerHost } from 'perfect-ws';
 
-class Counter extends PureRPC {
+class Counter {
   count = 0;
   increment() { return ++this.count; }
 }
@@ -237,7 +270,7 @@ const host = new ServerHost({
   fullTrustedRPC: true,
 });
 
-host.router.on('counter', () => globalCounter);
+host.router.on('counter', () => new PureRPC(globalCounter));
 host.start();
 ```
 
@@ -263,7 +296,7 @@ counter.count = 10;
 console.log(await counter.count);       // 10
 ```
 
-No `using` declaration or `Symbol.dispose` call is required. PerfectWS keeps the remote object alive while the handle or any derived property handle is reachable, then automatically releases both sides after garbage collection. The same handle survives a normal reconnect of the same `RemoteClient` instance.
+Automatically releases both sides after garbage collection (survives a normal reconnect).
 
 Use a `using` declaration when you want deterministic cleanup at the end of a scope:
 
@@ -274,9 +307,9 @@ Use a `using` declaration when you want deterministic cleanup at the end of a sc
 } // released here
 ```
 
-This optional syntax needs a runtime that supports explicit resource management, or TypeScript transpilation. Node.js 22 cannot parse a raw `using` declaration; automatic cleanup works on every supported Node.js version.
+A property read such as `await remote.items` returns a value snapshot. To mutate an owner-side `Map` or `Set`, invoke its method through the handle:
 
-A property read such as `await remote.items` returns a value snapshot. To mutate an owner-side `Map` or `Set`, invoke its method through the handle, for example `await remote.items.add(value)`. See the [PureRPC guide](docs/pure-rpc.md) for the trust model, container behavior, and lifetime details.
+for example `await remote.items.add(value)`. See the [PureRPC guide](docs/pure-rpc.md) for the trust model, container behavior, and lifetime details.
 
 ## Where to go next
 
