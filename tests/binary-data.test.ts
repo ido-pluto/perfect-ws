@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { serializeWith } from './utils/serializeWith.js';
 import { TransformBinaryData } from '../src/PerfectWSAdvanced/transform/TransformBinaryData';
 import { BSON } from 'bson';
 
@@ -14,7 +15,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = Buffer.from([1, 2, 3, 4, 5]);
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.buffer).toHaveProperty('___type', 'binaryData');
             expect(serialized.buffer).toHaveProperty('type', 'Buffer');
 
@@ -27,7 +28,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = Buffer.from('Hello World', 'utf-8');
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -38,7 +39,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = Buffer.alloc(0);
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -52,7 +53,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             }
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(Buffer);
@@ -65,7 +66,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Uint8Array([10, 20, 30, 40, 50]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Uint8Array');
 
@@ -78,7 +79,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Uint8Array([0, 127, 128, 255]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Uint8Array);
@@ -94,7 +95,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Uint16Array([100, 200, 300, 400]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Uint16Array');
 
@@ -107,7 +108,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Uint16Array([0, 32767, 32768, 65535]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Uint16Array);
@@ -120,7 +121,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Uint32Array([1000, 2000, 3000, 4000]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Uint32Array');
 
@@ -133,7 +134,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Uint32Array([0, 2147483647, 2147483648, 4294967295]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Uint32Array);
@@ -146,7 +147,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Int8Array([-10, -5, 0, 5, 10]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Int8Array');
 
@@ -159,7 +160,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Int8Array([-128, -1, 0, 1, 127]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Int8Array);
@@ -172,7 +173,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Int16Array([-1000, -500, 0, 500, 1000]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Int16Array');
 
@@ -185,7 +186,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Int16Array([-32768, -1, 0, 1, 32767]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Int16Array);
@@ -198,7 +199,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Int32Array([-10000, -5000, 0, 5000, 10000]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Int32Array');
 
@@ -211,7 +212,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Int32Array([-2147483648, -1, 0, 1, 2147483647]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Int32Array);
@@ -224,7 +225,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Float32Array([-1.5, -0.5, 0, 0.5, 1.5]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Float32Array');
 
@@ -237,7 +238,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Float32Array([0, -0, Infinity, -Infinity, 3.14159]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Float32Array);
@@ -252,7 +253,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Float32Array([1, NaN, 3]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Float32Array);
@@ -267,7 +268,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Float64Array([-1.5, -0.5, 0, 0.5, 1.5]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.array).toHaveProperty('type', 'Float64Array');
 
@@ -280,7 +281,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Float64Array([0, -0, Infinity, -Infinity, Math.PI]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Float64Array);
@@ -295,7 +296,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Float64Array([1.7976931348623157e+308, Number.MIN_VALUE]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array).toBeInstanceOf(Float64Array);
@@ -311,7 +312,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             view.set([1, 2, 3, 4, 5, 6, 7, 8]);
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.buffer).toHaveProperty('___type', 'binaryData');
             expect(serialized.buffer).toHaveProperty('type', 'ArrayBuffer');
 
@@ -327,7 +328,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new ArrayBuffer(0);
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffer).toBeInstanceOf(ArrayBuffer);
@@ -343,7 +344,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             original.setFloat64(4, 3.14159);
             const data = { view: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.view).toHaveProperty('___type', 'binaryData');
             expect(serialized.view).toHaveProperty('type', 'DataView');
 
@@ -362,7 +363,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new DataView(buffer, 4, 8);
             const data = { view: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.view).toBeInstanceOf(DataView);
@@ -385,7 +386,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
                 }
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.level1.buffer).toHaveProperty('___type', 'binaryData');
             expect(serialized.level1.level2.array).toHaveProperty('___type', 'binaryData');
             expect(serialized.level1.level2.level3.float).toHaveProperty('___type', 'binaryData');
@@ -404,7 +405,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
                 'regular string'
             ];
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized[0]).toHaveProperty('___type', 'binaryData');
             expect(serialized[1]).toHaveProperty('___type', 'binaryData');
             expect(serialized[2].nested).toHaveProperty('___type', 'binaryData');
@@ -431,7 +432,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
                 object: { key: 'value' }
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.string).toBe('hello');
             expect(serialized.number).toBe(42);
             expect(serialized.boolean).toBe(true);
@@ -451,7 +452,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
         it('should handle binary data at root level', () => {
             const original = Buffer.from([1, 2, 3, 4, 5]);
 
-            const serialized = transform.serialize(original);
+            const serialized = serializeWith(transform, original);
             expect(serialized).toHaveProperty('___type', 'binaryData');
 
             const deserialized = transform.deserialize(serialized);
@@ -474,7 +475,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
                 }
             };
 
-            const serialized = shallowTransform.serialize(data);
+            const serialized = serializeWith(shallowTransform, data);
             // Buffer at depth 3 should not be transformed due to depth limit
             expect(serialized.level1.level2.level3.buffer).toBe(deepBuffer);
         });
@@ -485,9 +486,9 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             };
             obj.circular = obj;
 
-            const serialized = transform.serialize(obj);
+            const serialized = serializeWith(transform, obj);
             expect(serialized.buffer).toHaveProperty('___type', 'binaryData');
-            expect(serialized.circular).toBe(obj.circular); // Circular reference preserved
+            expect(serialized.circular).toBe(serialized);
         });
 
         it('should not transform non-binary objects', () => {
@@ -499,7 +500,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
                 set: new Set([1, 2, 3])
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             expect(serialized.date).toBeInstanceOf(Date);
             expect(serialized.regex).toBeInstanceOf(RegExp);
             expect(typeof serialized.function).toBe('function');
@@ -527,7 +528,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const data = { buffer: original };
 
             // Apply transformer before BSON
-            const transformed = transform.serialize(data);
+            const transformed = serializeWith(transform, data);
             const bsonSerialized = BSON.serialize(transformed);
             const bsonDeserialized = BSON.deserialize(bsonSerialized);
             const restored = transform.deserialize(bsonDeserialized);
@@ -541,6 +542,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             // Simulate data coming from BSON deserialization
             const bsonBinary = new BSON.Binary(Buffer.from([10, 20, 30, 40, 50]));
             const data = {
+                ___perfectWS: 1,
                 ___type: 'binaryData',
                 type: 'Buffer',
                 data: bsonBinary
@@ -569,7 +571,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const expectedFloat64 = Array.from(data.float64);
 
             // Full round-trip with BSON
-            const transformed = transform.serialize(data);
+            const transformed = serializeWith(transform, data);
             const bsonSerialized = BSON.serialize(transformed);
             const bsonDeserialized = BSON.deserialize(bsonSerialized);
             const restored = transform.deserialize(bsonDeserialized);
@@ -604,7 +606,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
                 buffers: Array.from({ length: 100 }, (_, i) => Buffer.from([i, i + 1, i + 2]))
             };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.buffers).toHaveLength(100);
@@ -624,7 +626,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             }
 
             const data = { largeBuffer: original };
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.largeBuffer).toBeInstanceOf(Buffer);
@@ -642,7 +644,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = Buffer.from('Hello World', 'utf-8');
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             // Test that Buffer methods work
@@ -656,7 +658,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = new Uint32Array([100, 200, 300]);
             const data = { array: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             expect(deserialized.array.length).toBe(3);
@@ -668,7 +670,7 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
             const original = Buffer.from([1, 2, 3, 4, 5]);
             const data = { buffer: original };
 
-            const serialized = transform.serialize(data);
+            const serialized = serializeWith(transform, data);
             const deserialized = transform.deserialize(serialized);
 
             // Modify the deserialized buffer
@@ -681,4 +683,3 @@ describe('TransformBinaryData - Comprehensive Binary Data Tests', () => {
         });
     });
 });
-

@@ -9,9 +9,9 @@ export interface MessageEvent<T = any> extends Event {
 }
 
 type CloseEventInit = EventInit & {
-    code?: number;
-    reason?: string;
-    wasClean?: boolean;
+    code: number;
+    reason: string;
+    wasClean: boolean;
 }
 
 class CloseEvent extends Event {
@@ -22,9 +22,9 @@ class CloseEvent extends Event {
 
     constructor(type: string, init: CloseEventInit) {
         super(type, init);
-        this.code = init.code ?? 1000;
-        this.reason = init.reason ?? '';
-        this.wasClean = init.wasClean ?? true;
+        this.code = init.code;
+        this.reason = init.reason;
+        this.wasClean = init.wasClean;
     }
 }
 
@@ -46,7 +46,7 @@ export interface WSLike {
     dispatchEvent?(event: Event): boolean;
     emit?(event: string, ...args: any[]): boolean;
     close(code?: number, reason?: string): void;
-    send(data: string | ArrayBufferLike): void;
+    send(data: string | ArrayBuffer): void;
     addEventListener(type: string, listener: any, options?: any): void;
     removeEventListener(type: string, listener: any, options?: any): void;
     onopen?: ((ev: any) => any) | null;
@@ -59,6 +59,7 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
     private _ws: WSType;
     private _closeListeners: Set<Function> = new Set();
     private _forceClosed: boolean = false;
+    private _closeEventDispatched = false;
     private _virtualCloseListeners: Array<{ listener: Function; once?: boolean; }> = [];
     private _nativeCloseHandler: ((event: any) => void) | null = null;
 
@@ -96,6 +97,9 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
     }
 
     private _triggerVirtualCloseListeners(event?: any): void {
+        if (this._closeEventDispatched) return;
+        this._closeEventDispatched = true;
+
         const closeEvent = event || new CloseEvent('close', {
             code: 1000,
             reason: '',
@@ -104,7 +108,10 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
 
         const listenersToRemove: Function[] = [];
 
-        for (const entry of this._virtualCloseListeners) {
+        for (const entry of [...this._virtualCloseListeners]) {
+            // A previous listener may have removed this entry during the same dispatch.
+            if (!this._virtualCloseListeners.includes(entry)) continue;
+
             try {
                 entry.listener.call(this._ws, closeEvent);
                 if (entry.once) {
@@ -197,7 +204,7 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
         this._ws.close(code, reason);
     }
 
-    send(data: string | ArrayBufferLike): void {
+    send(data: string | ArrayBuffer): void {
         this._ws.send(data);
     }
 
@@ -213,6 +220,7 @@ export class WebSocketForce<WSType extends WSLike = WSLike> {
     ): void;
     addEventListener(type: string, listener: unknown, options?: unknown): void {
         if (type === 'close' && typeof listener === 'function') {
+            if (this._virtualCloseListeners.some(entry => entry.listener === listener)) return;
             this._closeListeners.add(listener);
             const once = typeof options === 'object' && options !== null && 'once' in options ? !!(options as any).once : false;
             this._virtualCloseListeners.push({ listener, once });

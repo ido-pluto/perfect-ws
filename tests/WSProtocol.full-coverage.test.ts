@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PerfectWS } from '../src/PerfectWS';
 import { BSON } from 'bson';
 import { NetworkEventListener } from '../src/utils/NetworkEventListener';
+import { WebSocketForce } from '../src/utils/WebSocketForce';
 import { sleep } from '../src/utils/sleepPromise.js';
 
 // Mock WebSocket
@@ -148,6 +149,7 @@ describe('PerfectWS Full Coverage', () => {
         data: BSON.serialize({
           method: 'streamTest',
           requestId: 'test123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -181,6 +183,7 @@ describe('PerfectWS Full Coverage', () => {
         data: BSON.serialize({
           method: 'failTest',
           requestId: 'fail123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -217,6 +220,7 @@ describe('PerfectWS Full Coverage', () => {
         data: BSON.serialize({
           method: 'longTest',
           requestId: 'long123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -252,6 +256,7 @@ describe('PerfectWS Full Coverage', () => {
         data: BSON.serialize({
           method: 'abortableTest',
           requestId: 'abort123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -262,6 +267,7 @@ describe('PerfectWS Full Coverage', () => {
       await messageHandler({
         data: BSON.serialize({
           requestId: 'abort123',
+          clientId: 'test-client',
           event: { eventName: '___abort', args: ['User cancelled'] }
         })
       });
@@ -285,6 +291,7 @@ describe('PerfectWS Full Coverage', () => {
       await messageHandler({
         data: BSON.serialize({
           requestId: 'unknown123',
+          clientId: 'test-client',
           event: { eventName: 'customEvent', args: ['test'] }
         })
       });
@@ -316,6 +323,7 @@ describe('PerfectWS Full Coverage', () => {
         data: BSON.serialize({
           method: 'errorTest',
           requestId: 'error123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -346,6 +354,7 @@ describe('PerfectWS Full Coverage', () => {
         data: BSON.serialize({
           method: 'throwTest',
           requestId: 'throw123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -377,6 +386,7 @@ describe('PerfectWS Full Coverage', () => {
         data: BSON.serialize({
           method: 'throwCodeTest',
           requestId: 'throwCode123',
+          clientId: 'test-client',
           data: null
         })
       });
@@ -563,12 +573,13 @@ describe('PerfectWS Full Coverage', () => {
         on: vi.fn()
       };
 
-      WebSocketMock.mockImplementation(() => mockWs);
+      const wrappedSocket = new WebSocketForce(mockWs as any);
+      WebSocketMock.mockImplementation(() => wrappedSocket);
       autoReconnect('ws://localhost:1234', WebSocketMock as any);
 
       // Simulate receiving pings periodically
       const pingInterval = setInterval(() => {
-        router['_lastPingTime'] = Date.now();
+        router['_lastPingTimes'].set(wrappedSocket, Date.now());
       }, 40);
 
       await sleep(200);
@@ -600,11 +611,12 @@ describe('PerfectWS Full Coverage', () => {
         on: vi.fn()
       };
 
-      WebSocketMock.mockImplementation(() => mockWs);
+      const wrappedSocket = new WebSocketForce(mockWs as any);
+      WebSocketMock.mockImplementation(() => wrappedSocket);
       autoReconnect('ws://localhost:1234', WebSocketMock as any);
 
       // Keep pinging
-      router['_lastPingTime'] = Date.now();
+      router['_lastPingTimes'].set(wrappedSocket, Date.now());
 
       // Close socket normally after 100ms
       setTimeout(() => {

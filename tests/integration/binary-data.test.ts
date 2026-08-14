@@ -2,10 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { PerfectWSAdvanced } from '../../src/index.js';
 import { WebSocketServer, WebSocket } from 'ws';
 
+async function createListeningServer(): Promise<{ wss: WebSocketServer; port: number; }> {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', resolve));
+    const address = wss.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP server address');
+    return { wss, port: address.port };
+}
+
 describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     it('should handle Buffer through PerfectWSAdvanced', async () => {
-        const port = 19201;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -38,8 +45,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should handle TypedArrays through PerfectWSAdvanced', async () => {
-        const port = 19202;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -88,8 +94,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should handle ArrayBuffer and DataView through PerfectWSAdvanced', async () => {
-        const port = 19203;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -147,8 +152,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should handle nested objects with binary data', async () => {
-        const port = 19204;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -201,8 +205,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should handle arrays of binary data', async () => {
-        const port = 19205;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -250,8 +253,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should handle large binary data', async () => {
-        const port = 19206;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -291,8 +293,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should handle mixed binary and regular data', async () => {
-        const port = 19207;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -341,8 +342,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should preserve binary data integrity through multiple round trips', async () => {
-        const port = 19208;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -387,8 +387,7 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
     }, 10000);
 
     it('should handle binary data through request with event handler', async () => {
-        const port = 19209;
-        const wss = new WebSocketServer({ port });
+        const { wss, port } = await createListeningServer();
 
         const { router: server, attachClient } = PerfectWSAdvanced.server();
 
@@ -422,4 +421,3 @@ describe('Binary Data Integration Tests with PerfectWSAdvanced', () => {
         await new Promise((resolve) => wss.close(resolve));
     }, 10000);
 });
-

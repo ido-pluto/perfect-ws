@@ -9,16 +9,19 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
   let serverPort: number;
 
   beforeEach(async () => {
-    serverPort = 10080 + Math.floor(Math.random() * 1000);
-    wss = new WebSocketServer({ port: serverPort });
+    wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      wss.once('listening', resolve);
+      wss.once('error', reject);
+    });
+    const address = wss.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing WebSocket address');
+    serverPort = address.port;
   });
 
   afterEach(async () => {
-    // Give pending operations time to complete before cleanup
-    await sleep(200);
-    wss.close();
-    // Additional delay for cleanup to propagate
-    await sleep(100);
+    for (const socket of wss.clients) socket.terminate();
+    await new Promise<void>(resolve => wss.close(() => resolve()));
   }, 180_000); // 3 minute timeout for cleanup
 
   it('should handle split-brain scenarios during network partition', async () => {
@@ -138,7 +141,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
 
     expect(results.length).toBeGreaterThan(0);
     expect(server1Count).toBeGreaterThan(0);
-    expect(server2Count).toBeGreaterThanOrEqual(0);
+    expect(server2Count).toBeGreaterThan(0);
 
     // Check for potential duplicate processing
     const allRequestIds = [
@@ -147,9 +150,8 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
     ];
     const uniqueIds = new Set(allRequestIds);
 
-    // Some requests might be processed by both servers (split-brain)
     const duplicates = allRequestIds.length - uniqueIds.size;
-    expect(duplicates).toBeGreaterThanOrEqual(0);
+    expect(duplicates).toBe(0);
 
     // Close connection and cleanup
     ws.close();
@@ -288,11 +290,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
     const uniqueTokens = new Set(tokenHistory.map(h => h.token));
     expect(uniqueTokens.size).toBeGreaterThanOrEqual(1);
 
-    // Verify operations spanned multiple token versions
-    if (successful.length > 0) {
-      const multiVersionOps = successful.filter(r => r.tokenVersions > 1);
-      expect(multiVersionOps.length).toBeGreaterThanOrEqual(0);
-    }
+    expect(successful.length + failed.length).toBe(3);
 
     // Close connection and cleanup
     ws.close();
@@ -308,8 +306,8 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
 
     // Simulate resource monitoring
     const resourceMonitor = setInterval(() => {
-      cpuLoad = Math.min(100, cpuLoad + Math.random() * 10 - 3);
-      memoryUsage = Math.min(100, memoryUsage + Math.random() * 5 - 2);
+      cpuLoad = Math.min(100, cpuLoad + 4);
+      memoryUsage = Math.min(100, memoryUsage + 3);
     }, 100);
 
     server.on('resource-intensive', async (data, { send }) => {
@@ -377,7 +375,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
       requests.push(
         client.request('resource-intensive', {
           id: `resource-${i}`,
-          size: Math.random() * 1000
+          size: i * 50
         }, {
           callback: (data, error, done) => {
             if (!done && data?.mode) {
@@ -447,8 +445,8 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
         };
       }
 
-      // Simulate processing with potential failure
-      if (data.failureRate && Math.random() < data.failureRate) {
+      const failuresBeforeSuccess = data.failureRate >= 0.7 ? 2 : data.failureRate > 0 ? 1 : 0;
+      if (data.attempt <= failuresBeforeSuccess) {
         throw new Error(`Processing failed for ${key}`);
       }
 
@@ -477,7 +475,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
     await client.serverOpen;
 
     const executeWithRetry = async (operation: string, value: number, failureRate = 0): Promise<any> => {
-      const idempotencyKey = `${operation}-${value}-${Date.now()}`;
+      const idempotencyKey = `${operation}-${value}`;
       let lastError: any;
 
       for (let attempt = 1; attempt <= 3; attempt++) {
@@ -543,7 +541,9 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
     operations.push(executeWithRetry(`normal`, 0)); // Duplicate of first
     operations.push(executeWithRetry(`normal`, 0)); // Another duplicate
 
-    const results = await Promise.all(operations);
+    const results = await Promise.all(operations.slice(0, 9));
+    results.push(await executeWithRetry(`normal`, 0));
+    results.push(await executeWithRetry(`normal`, 0));
 
     const successful = results.filter(r => r.processed);
     const failed = results.filter(r => r.error);
@@ -554,7 +554,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
     expect(successful.length).toBeGreaterThan(failed.length);
 
     // Should have some cached responses (idempotency)
-    expect(cached.length).toBeGreaterThanOrEqual(0);
+    expect(cached.length).toBe(2);
 
     // Should have some retried operations
     expect(retried.length).toBeGreaterThan(0);
@@ -577,11 +577,13 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
       const { router, attachClient } = PerfectWSAdvanced.server();
       const replicaId = r;
       const state = new Map<string, any>();
+      let replicaCalls = 0;
       replicaStates.set(replicaId, state);
 
       router.on('consensus', async (data) => {
         // Simulate Byzantine behavior - sometimes disagree
-        const byzantineBehavior = Math.random() < 0.1; // 10% Byzantine
+        replicaCalls++;
+        const byzantineBehavior = replicaCalls === 4;
 
         if (data.operation === 'write') {
           const value = byzantineBehavior ? `byzantine-${replicaId}` : data.value;
@@ -593,7 +595,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
           });
 
           // Simulate replication delay
-          await sleep(Math.random() * 50);
+          await sleep((replicaId + 1) * 2);
 
           return {
             replica: replicaId,
@@ -724,7 +726,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
 
     // Check Byzantine detection
     const byzantineDetected = results.filter(r => r.byzantineDetected);
-    expect(byzantineDetected.length).toBeGreaterThanOrEqual(0);
+    expect(byzantineDetected.length).toBeGreaterThan(0);
 
     // Verify replicas eventually agree (for non-Byzantine values)
     for (let i = 0; i < 3; i++) {
@@ -808,7 +810,7 @@ describe('Reconnection and Error Recovery Integration Tests', () => {
           const operation = {
             phase,
             computed: phase * phase,
-            random: Math.random()
+            deterministicValue: phase / 10
           };
 
           transaction.operations.push({

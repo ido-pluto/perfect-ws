@@ -82,6 +82,7 @@ describe('PerfectWSAdvanced', () => {
       const serialized = (router as any).serializeRequestData(data, events);
 
       expect(serialized.signal).toHaveProperty('___type', 'abortSignal');
+      expect(serialized.signal.subscribe).toHaveProperty('___type', 'callback');
       expect(serialized.callback).toHaveProperty('___type', 'callback');
       expect(serialized.normal).toBe('value');
     });
@@ -92,10 +93,12 @@ describe('PerfectWSAdvanced', () => {
 
       const serializedData = {
         signal: {
+          ___perfectWS: 1,
           ___type: 'abortSignal',
-          signalId: 'test-id'
+          subscribe: () => { }
         },
         callback: {
+          ___perfectWS: 1,
           ___type: 'callback',
           funcId: 'func-id',
           funcName: 'testFunc'
@@ -370,7 +373,7 @@ describe('PerfectWSAdvanced', () => {
         deserialize: (str: string) => new TestClass(str)
       }];
 
-      const transformAll = new TransformAll(events, transformers as any, 10);
+      const transformAll = new TransformAll({ events, transformers: transformers as any, maxDepth: 10 });
 
       const abortController = new AbortController();
       const data = {
@@ -397,7 +400,7 @@ describe('PerfectWSAdvanced', () => {
 
     it('should handle empty transformers', () => {
       const events = new NetworkEventListener();
-      const transformAll = new TransformAll(events, undefined, 10);
+      const transformAll = new TransformAll({ events, maxDepth: 10 });
 
       const data = {
         callback: () => 'test',
@@ -411,7 +414,7 @@ describe('PerfectWSAdvanced', () => {
 
     it('should handle empty array transformers', () => {
       const events = new NetworkEventListener();
-      const transformAll = new TransformAll(events, [], 10);
+      const transformAll = new TransformAll({ events, transformers: [], maxDepth: 10 });
 
       const data = {
         callback: () => 'test',
@@ -427,14 +430,14 @@ describe('PerfectWSAdvanced', () => {
   describe('Circular Object Handling', () => {
     it('should serialize circular objects with reference markers', () => {
       const events = new NetworkEventListener();
-      const transformAll = new TransformAll(events);
+      const transformAll = new TransformAll({ events });
 
       const circularObj: any = { name: 'test' };
       circularObj.self = circularObj;
 
       const serialized = transformAll.serialize(circularObj);
       expect(serialized.self).toHaveProperty('___type', 'circularRef');
-      expect(serialized.self).toHaveProperty('refPath', '');
+      expect(serialized.self).toHaveProperty('refPath', []);
       expect(serialized.name).toBe('test');
 
       const deserialized = transformAll.deserialize(serialized);
@@ -443,7 +446,7 @@ describe('PerfectWSAdvanced', () => {
 
     it('should handle nested circular references', () => {
       const events = new NetworkEventListener();
-      const transformAll = new TransformAll(events);
+      const transformAll = new TransformAll({ events });
 
       const parent: any = { name: 'parent' };
       const child: any = { name: 'child', parent };
@@ -451,7 +454,7 @@ describe('PerfectWSAdvanced', () => {
 
       const serialized = transformAll.serialize(parent);
       expect(serialized.child.parent).toHaveProperty('___type', 'circularRef');
-      expect(serialized.child.parent).toHaveProperty('refPath', '');
+      expect(serialized.child.parent).toHaveProperty('refPath', []);
       expect(serialized.name).toBe('parent');
       expect(serialized.child.name).toBe('child');
 
@@ -461,14 +464,14 @@ describe('PerfectWSAdvanced', () => {
 
     it('should handle circular arrays', () => {
       const events = new NetworkEventListener();
-      const transformAll = new TransformAll(events);
+      const transformAll = new TransformAll({ events });
 
       const circularArray: any = [1, 2, 3];
       circularArray.push(circularArray);
 
       const serialized = transformAll.serialize(circularArray);
       expect(serialized[3]).toHaveProperty('___type', 'circularRef');
-      expect(serialized[3]).toHaveProperty('refPath', '');
+      expect(serialized[3]).toHaveProperty('refPath', []);
       expect(serialized[0]).toBe(1);
       expect(serialized[1]).toBe(2);
       expect(serialized[2]).toBe(3);
@@ -479,14 +482,14 @@ describe('PerfectWSAdvanced', () => {
 
     it('should respect maxDepth for circular detection', () => {
       const events = new NetworkEventListener();
-      const transformAll = new TransformAll(events, undefined, 10);
+      const transformAll = new TransformAll({ events, maxDepth: 10 });
 
       const deepObj: any = { level1: { level2: { level3: {} } } };
       deepObj.level1.level2.level3.circular = deepObj;
 
       const serialized = transformAll.serialize(deepObj);
       expect(serialized.level1.level2.level3.circular).toHaveProperty('___type', 'circularRef');
-      expect(serialized.level1.level2.level3.circular).toHaveProperty('refPath', '');
+      expect(serialized.level1.level2.level3.circular).toHaveProperty('refPath', []);
 
       const deserialized = transformAll.deserialize(serialized);
       expect(deserialized.level1.level2.level3.circular).toBe(deserialized);
@@ -494,7 +497,7 @@ describe('PerfectWSAdvanced', () => {
 
     it('should not create circular references for non-circular objects', () => {
       const events = new NetworkEventListener();
-      const transformAll = new TransformAll(events);
+      const transformAll = new TransformAll({ events });
 
       const normalObj = { name: 'test', value: 42, nested: { data: 'value' } };
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { serializeWith } from './utils/serializeWith.js';
 import { TransformCallbacks } from '../src/PerfectWSAdvanced/transform/TransformCallbacks.ts';
 import { NetworkEventListener } from '../src/utils/NetworkEventListener.ts';
 import { PerfectWSError } from '../src/PerfectWSError.ts';
@@ -12,11 +13,21 @@ describe('TransformCallbacks Extended Coverage', () => {
     transform = new TransformCallbacks(events, 10);
   });
 
+  it('allocates callback registries only when callbacks are used', () => {
+    serializeWith(transform, { value: 1 });
+
+    expect(transform['_functions']).toBeUndefined();
+    expect(transform['_functionEntries']).toBeUndefined();
+    expect(transform['_activeRequests']).toBeUndefined();
+    expect(transform['_receivedFunctions']).toBeUndefined();
+    expect(transform['_receivedFunctionEntries']).toBeUndefined();
+  });
+
   describe('Remote Function Execution', () => {
     it('should handle remote callback request', async () => {
       // Register a local function
       const localFunc = vi.fn().mockResolvedValue({ result: 'success' });
-      const serialized = transform.serialize(localFunc);
+      const serialized = serializeWith(transform, localFunc);
 
       // Simulate remote callback request
       const responsePromise = new Promise((resolve) => {
@@ -43,7 +54,7 @@ describe('TransformCallbacks Extended Coverage', () => {
     it('should handle remote callback request with error', async () => {
       // Register a function that throws
       const localFunc = vi.fn().mockRejectedValue(new Error('Function failed'));
-      const serialized = transform.serialize(localFunc);
+      const serialized = serializeWith(transform, localFunc);
 
       const responsePromise = new Promise((resolve) => {
         events.on('___callback.response', (source, data) => {
@@ -62,6 +73,56 @@ describe('TransformCallbacks Extended Coverage', () => {
       expect(response).toEqual({
         error: 'Function failed',
         requestId: 'req124'
+      });
+    });
+
+    it.each([
+      ['null', null, 'null'],
+      ['zero', 0, '0'],
+      ['empty string', '', ''],
+      ['undefined', undefined, 'undefined'],
+    ])('returns a response when a callback throws %s', async (_label, thrown, expected) => {
+      const localFunc = () => { throw thrown; };
+      const serialized = serializeWith(transform, localFunc);
+      const responsePromise = new Promise<any>((resolve) => {
+        events.on('___callback.response', (source, data) => {
+          if (source === 'local') resolve(data);
+        });
+      });
+
+      events._emitWithSource('___callback.request', 'remote', {
+        args: [],
+        funcId: serialized.funcId,
+        requestId: `throw-${_label}`,
+      });
+
+      await expect(responsePromise).resolves.toEqual({
+        error: expected,
+        requestId: `throw-${_label}`,
+      });
+    });
+
+    it('returns a response even when the thrown value resists inspection and string conversion', async () => {
+      const hostile = new Proxy({}, {
+        has: () => { throw new Error('blocked'); },
+        get: () => { throw new Error('blocked'); },
+      });
+      const serialized = serializeWith(transform, () => { throw hostile; });
+      const responsePromise = new Promise<any>(resolve => {
+        events.on('___callback.response', (source, data) => {
+          if (source === 'local') resolve(data);
+        });
+      });
+
+      events._emitWithSource('___callback.request', 'remote', {
+        args: [],
+        funcId: serialized.funcId,
+        requestId: 'hostile-error',
+      });
+
+      await expect(responsePromise).resolves.toEqual({
+        error: 'Unknown error',
+        requestId: 'hostile-error',
       });
     });
 
@@ -105,7 +166,7 @@ describe('TransformCallbacks Extended Coverage', () => {
     it('should handle remote callback response with data', async () => {
       // Set up a pending request
       const { promise, resolve } = Promise.withResolvers();
-      transform['_activeRequests'].set('req127', {
+      (transform['_activeRequests'] ??= new Map()).set('req127', {
         resolve,
         reject: vi.fn()
       });
@@ -118,14 +179,14 @@ describe('TransformCallbacks Extended Coverage', () => {
 
       const result = await promise;
       expect(result).toEqual({ result: 'remote success' });
-      expect(transform['_activeRequests'].has('req127')).toBe(false);
+      expect(transform['_activeRequests']?.has('req127') ?? false).toBe(false);
     });
 
     it('should handle remote callback response with error', async () => {
       // Set up a pending request
       const { promise, reject } = Promise.withResolvers();
       const rejectSpy = vi.fn(reject);
-      transform['_activeRequests'].set('req128', {
+      (transform['_activeRequests'] ??= new Map()).set('req128', {
         resolve: vi.fn(),
         reject: rejectSpy
       });
@@ -138,7 +199,58 @@ describe('TransformCallbacks Extended Coverage', () => {
 
       await expect(promise).rejects.toThrow(PerfectWSError);
       expect(rejectSpy).toHaveBeenCalledWith(expect.any(PerfectWSError));
-      expect(transform['_activeRequests'].has('req128')).toBe(false);
+      expect(transform['_activeRequests']?.has('req128') ?? false).toBe(false);
+    });
+
+    it.each([0, '', null, undefined])('rejects a falsy remote error (%s)', async (error) => {
+      const { promise, reject } = Promise.withResolvers();
+      (transform['_activeRequests'] ??= new Map()).set('falsy-error', {
+        resolve: vi.fn(),
+        reject,
+      });
+
+      events._emitWithSource('___callback.response', 'remote', {
+        error,
+        requestId: 'falsy-error',
+      });
+
+      await expect(promise).rejects.toMatchObject({
+        code: 'callbackError',
+        message: String(error),
+      });
+    });
+
+    it('marks internal durable callback calls on both request and response', async () => {
+      const callback = transform.deserialize({
+        ___perfectWS: 1,
+        ___type: 'callback',
+        funcId: 'durable-function',
+        funcName: 'durableFunction',
+      });
+      const requestPromise = new Promise<any>(resolve => {
+        events.on('___callback.request', (source, message) => {
+          if (source === 'local') resolve(message);
+        });
+      });
+
+      const resultPromise = transform.invokeReceivedFunction(callback, ['reason'], true);
+      const request = await requestPromise;
+      expect(request).toMatchObject({
+        args: ['reason'],
+        funcId: 'durable-function',
+        durable: true,
+      });
+
+      events._emitWithSource('___callback.response', 'remote', {
+        data: 'ack',
+        requestId: request.requestId,
+        durable: true,
+      });
+      await expect(resultPromise).resolves.toBe('ack');
+    });
+
+    it('directly invokes a function that was not received from the peer', async () => {
+      await expect(transform.invokeReceivedFunction((value: number) => value * 2, [4], true)).resolves.toBe(8);
     });
 
     it('should ignore response for non-existent request', () => {
@@ -157,7 +269,7 @@ describe('TransformCallbacks Extended Coverage', () => {
 
     it('should ignore local callback responses', () => {
       const resolveSpy = vi.fn();
-      transform['_activeRequests'].set('req129', {
+      (transform['_activeRequests'] ??= new Map()).set('req129', {
         resolve: resolveSpy,
         reject: vi.fn()
       });
@@ -169,13 +281,14 @@ describe('TransformCallbacks Extended Coverage', () => {
       });
 
       expect(resolveSpy).not.toHaveBeenCalled();
-      expect(transform['_activeRequests'].has('req129')).toBe(true);
+      expect(transform['_activeRequests']?.has('req129') ?? false).toBe(true);
     });
   });
 
   describe('Deserialization', () => {
     it('should deserialize callback and create callable function', async () => {
       const callbackData = {
+        ___perfectWS: 1,
         ___type: 'callback',
         funcId: 'func123',
         funcName: 'myFunction'
@@ -216,12 +329,14 @@ describe('TransformCallbacks Extended Coverage', () => {
       const data = {
         level1: {
           callback: {
+            ___perfectWS: 1,
             ___type: 'callback',
             funcId: 'nested-func',
             funcName: 'nestedFunc'
           },
           level2: {
             anotherCallback: {
+              ___perfectWS: 1,
               ___type: 'callback',
               funcId: 'deep-func',
               funcName: 'deepFunc'
@@ -236,12 +351,106 @@ describe('TransformCallbacks Extended Coverage', () => {
       expect(typeof deserialized.level1.level2.anotherCallback).toBe('function');
       expect(deserialized.level1.level2.anotherCallback.name).toBe('deepFunc');
     });
+
+    it('reuses a live received wrapper and releases its remote function when finalized', () => {
+      const marker = {
+        ___perfectWS: 1,
+        ___type: 'callback',
+        funcId: 'received-func',
+        funcName: 'receivedFunc'
+      };
+      const releases: any[] = [];
+      events.on('___callback.release', (source, message) => {
+        if (source === 'local') releases.push(message);
+      });
+
+      const first = transform.deserialize({ ...marker });
+      const second = transform.deserialize({ ...marker });
+      expect(second).toBe(first);
+      expect(transform.hasLiveState()).toBe(true);
+
+      transform.finalizeReceivedFunction('missing-func', {});
+      transform.finalizeReceivedFunction(marker.funcId, {});
+      expect(transform.hasLiveState()).toBe(true);
+
+      transform.releaseReceivedFunction(first);
+
+      expect(releases).toEqual([{ funcId: marker.funcId }]);
+      expect(transform.hasLiveState()).toBe(false);
+    });
+
+    it('passes callbacks back to their owner without registering a trampoline', () => {
+      const original = () => 'original';
+      const ownedMarker = serializeWith(transform, original);
+      expect(transform.deserialize({ ...ownedMarker })).toBe(original);
+
+      const remoteMarker = {
+        ___perfectWS: 1,
+        ___type: 'callback',
+        funcId: 'remote-callback',
+        funcName: 'remoteCallback',
+      };
+      const remote = transform.deserialize(remoteMarker);
+      const returnedMarker = serializeWith(transform, remote);
+
+      expect(returnedMarker).toEqual(remoteMarker);
+      expect(transform['_functions']?.size ?? 0).toBe(1);
+      expect(transform['_receivedFunctions']?.size ?? 0).toBe(1);
+    });
+
+    it('runs an owned callback release handler exactly once', () => {
+      const callback = () => undefined;
+      const release = vi.fn();
+      transform.setFunctionReleaseHandler(callback, release);
+      const marker = serializeWith(transform, callback);
+
+      events._emitWithSource('___callback.release', 'remote', { funcId: marker.funcId });
+      transform.releaseFunction(callback);
+
+      expect(release).toHaveBeenCalledOnce();
+      expect(transform.hasLiveState()).toBe(false);
+    });
+
+    it('runs owned callback release handlers when the channel closes', () => {
+      const callback = () => undefined;
+      const release = vi.fn();
+      transform.setFunctionReleaseHandler(callback, release);
+      serializeWith(transform, callback);
+
+      transform.releaseAll();
+
+      expect(release).toHaveBeenCalledOnce();
+    });
+
+    it('rejects a deserialized callback after its channel is released', async () => {
+      const callback = transform.deserialize({
+        ___perfectWS: 1,
+        ___type: 'callback',
+        funcId: 'released-func',
+        funcName: 'releasedFunc'
+      });
+
+      transform.releaseAll();
+
+      await expect(callback()).rejects.toMatchObject({ code: 'callbackReleased' });
+    });
+
+    it('removes its protocol listeners when the channel is released', () => {
+      expect(events.listenerCount('___callback.request')).toBe(1);
+      expect(events.listenerCount('___callback.response')).toBe(1);
+
+      transform.releaseAll();
+      transform.releaseAll();
+
+      expect(events.listenerCount('___callback.request')).toBe(0);
+      expect(events.listenerCount('___callback.response')).toBe(0);
+    });
   });
 
   describe('Serialization Edge Cases', () => {
     it('should handle error with no message property', async () => {
       const localFunc = vi.fn().mockRejectedValue('String error');
-      const serialized = transform.serialize(localFunc);
+      const serialized = serializeWith(transform, localFunc);
 
       const responsePromise = new Promise((resolve) => {
         events.on('___callback.response', (source, data) => {
@@ -264,7 +473,7 @@ describe('TransformCallbacks Extended Coverage', () => {
 
     it('should handle synchronous function execution', async () => {
       const localFunc = vi.fn().mockReturnValue('sync result');
-      const serialized = transform.serialize(localFunc);
+      const serialized = serializeWith(transform, localFunc);
 
       const responsePromise = new Promise((resolve) => {
         events.on('___callback.response', (source, data) => {
@@ -289,11 +498,11 @@ describe('TransformCallbacks Extended Coverage', () => {
     it('should reuse funcId for same function', () => {
       const func = () => 'test';
 
-      const serialized1 = transform.serialize(func);
-      const serialized2 = transform.serialize(func);
+      const serialized1 = serializeWith(transform, func);
+      const serialized2 = serializeWith(transform, func);
 
       expect(serialized1.funcId).toBe(serialized2.funcId);
-      expect(transform['_functions'].length).toBe(1);
+      expect(transform['_functions']?.size ?? 0).toBe(1);
     });
 
     it('should handle circular references in serialization', () => {
@@ -301,9 +510,9 @@ describe('TransformCallbacks Extended Coverage', () => {
       obj.self = obj;
       obj.func = () => 'test';
 
-      const serialized = transform.serialize(obj);
+      const serialized = serializeWith(transform, obj);
       expect(serialized.func.___type).toBe('callback');
-      expect(serialized.self).toBe(obj.self); // Circular reference preserved
+      expect(serialized.self).toBe(serialized);
     });
 
     it('should not serialize beyond max depth', () => {
@@ -318,7 +527,7 @@ describe('TransformCallbacks Extended Coverage', () => {
       }
 
       const transform = new TransformCallbacks(events, 5);
-      const serialized = transform.serialize(deepObject);
+      const serialized = serializeWith(transform, deepObject);
 
       // Check that serialization stops at depth 5
       let checkDepth = serialized;
@@ -336,8 +545,8 @@ describe('TransformCallbacks Extended Coverage', () => {
       const func1 = vi.fn().mockResolvedValue('result1');
       const func2 = vi.fn().mockResolvedValue('result2');
 
-      const serialized1 = transform.serialize(func1);
-      const serialized2 = transform.serialize(func2);
+      const serialized1 = serializeWith(transform, func1);
+      const serialized2 = serializeWith(transform, func2);
 
       const responses: any[] = [];
       events.on('___callback.response', (source, data) => {
@@ -376,7 +585,7 @@ describe('TransformCallbacks Extended Coverage', () => {
         doubled: num * 2
       }));
 
-      const serialized = transform.serialize(complexFunc);
+      const serialized = serializeWith(transform, complexFunc);
 
       const responsePromise = new Promise((resolve) => {
         events.on('___callback.response', (source, data) => {

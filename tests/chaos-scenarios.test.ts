@@ -179,20 +179,24 @@ describe('Chaos Engineering - Non-Standard Scenarios', () => {
       const { router } = PerfectWS.server();
 
       // Server thinks it has active requests
+      const fakeWs = { readyState: 1, addEventListener: vi.fn(), removeEventListener: vi.fn() } as any;
       router['_activeResponses'].set('phantom-1', {
         events: new NetworkEventListener(),
-        clients: new Set()
+        clientRef: { ref: fakeWs },
+        clientId: 'phantom-client'
       });
       router['_activeResponses'].set('phantom-2', {
         events: new NetworkEventListener(),
-        clients: new Set()
+        clientRef: { ref: fakeWs },
+        clientId: 'phantom-client'
       });
 
       // Client asks about completely different requests
       const handler = router['_listenForRequests'].get('___syncRequests');
       const result = await handler?.callbacks?.[0]?.({
-        activeRequestsIds: ['real-1', 'real-2', 'real-3']
-      }, {} as any);
+        activeRequestsIds: ['real-1', 'real-2', 'real-3'],
+        clientId: 'phantom-client'
+      }, { ws: fakeWs } as any);
 
       // Server doesn't know any of the client's requests
       expect(result).toEqual(['real-1', 'real-2', 'real-3']);
